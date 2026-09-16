@@ -1,0 +1,6 @@
+# Known compatible dependency versions. The current container lacks the optional RL stack.
+numpy==2.3.5
+matplotlib==3.10.8
+gymnasium==1.2.0
+torch==2.5.1
+tqdm==4.70.0
