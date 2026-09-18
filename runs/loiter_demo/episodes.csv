@@ -1,0 +1,3 @@
+policy,seed,team_return,score,baseline_score,mission_success,destroyed_fraction,discovery_fraction,area_coverage,first_detection_step,active_agents,first_score_step,score_auc,targets,success_threshold,strike_attempts,strike_hits,agents_expended,agent_terminated,steps
+random,10000,-10.10000000000002,6.0,5.0,True,0.4,1.0,1.0,0,3,106,0.4950000000000007,5,5.0,3,3,3,"[False, False, False, False, False, False]",200
+heuristic,10000,17.319999999999983,14.0,5.0,True,0.8,1.0,1.0,0,0,45,1.866000000000005,5,5.0,4,4,6,"[False, False, False, False, False, False]",200

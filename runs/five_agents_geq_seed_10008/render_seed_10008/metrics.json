@@ -1,0 +1,26 @@
+{
+  "team_return": -8.299999999999985,
+  "score": 12.0,
+  "baseline_score": 12.0,
+  "mission_success": true,
+  "destroyed_fraction": 0.6,
+  "discovery_fraction": 1.0,
+  "area_coverage": 1.0,
+  "first_detection_step": 0,
+  "active_agents": 0,
+  "first_score_step": 54,
+  "score_auc": 0.585,
+  "targets": 5,
+  "success_threshold": 12.0,
+  "strike_attempts": 3,
+  "strike_hits": 3,
+  "agents_expended": 5,
+  "agent_terminated": [
+    false,
+    false,
+    false,
+    false,
+    false
+  ],
+  "steps": 200
+}

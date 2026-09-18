@@ -1,0 +1,247 @@
+{
+  "episodes": 1,
+  "summary": {
+    "random": {
+      "team_return": {
+        "iqm": -10.10000000000002,
+        "mean": -10.10000000000002,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "score": {
+        "iqm": 6.0,
+        "mean": 6.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "baseline_score": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "mission_success": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "destroyed_fraction": {
+        "iqm": 0.4,
+        "mean": 0.4,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "discovery_fraction": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "area_coverage": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "first_detection_step": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "active_agents": {
+        "iqm": 3.0,
+        "mean": 3.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "first_score_step": {
+        "iqm": 106.0,
+        "mean": 106.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "score_auc": {
+        "iqm": 0.4950000000000007,
+        "mean": 0.4950000000000007,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "targets": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "success_threshold": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "strike_attempts": {
+        "iqm": 3.0,
+        "mean": 3.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "strike_hits": {
+        "iqm": 3.0,
+        "mean": 3.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "agents_expended": {
+        "iqm": 3.0,
+        "mean": 3.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "steps": {
+        "iqm": 200.0,
+        "mean": 200.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      }
+    },
+    "heuristic": {
+      "team_return": {
+        "iqm": 17.319999999999983,
+        "mean": 17.319999999999983,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "score": {
+        "iqm": 14.0,
+        "mean": 14.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "baseline_score": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "mission_success": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "destroyed_fraction": {
+        "iqm": 0.8,
+        "mean": 0.8,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "discovery_fraction": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "area_coverage": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "first_detection_step": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "active_agents": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "first_score_step": {
+        "iqm": 45.0,
+        "mean": 45.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "score_auc": {
+        "iqm": 1.866000000000005,
+        "mean": 1.866000000000005,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "targets": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "success_threshold": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "strike_attempts": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "strike_hits": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "agents_expended": {
+        "iqm": 6.0,
+        "mean": 6.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      },
+      "steps": {
+        "iqm": 200.0,
+        "mean": 200.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 1
+      }
+    }
+  }
+}

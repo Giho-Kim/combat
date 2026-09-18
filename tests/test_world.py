@@ -74,6 +74,8 @@ class WorldTests(unittest.TestCase):
 
     def test_default_time_limit_penalty_and_start_distance(self):
         c = Config()
+        self.assertEqual(c.n_agents, 6)
+        self.assertEqual(c.gae_lambda, 1.0)
         self.assertEqual(c.horizon, 200)
         self.assertEqual(c.penalty_time, 0.1)
         self.assertEqual(c.mission_failure_penalty, 100.0)
@@ -82,6 +84,13 @@ class WorldTests(unittest.TestCase):
         w.reset(16)
         self.assertEqual(int(w.agent_active.sum()), c.n_agents)
         self.assertEqual(int(w.target_exists.sum()), c.n_targets)
+        per_life_values = []
+        for j in np.flatnonzero(w.target_exists):
+            initial_life = 2 if w.target_type[j] == 1 else 1
+            per_life_values.extend(
+                [w.target_score[j] / initial_life] * int(w.target_life[j]))
+        achievable = sum(sorted(per_life_values, reverse=True)[:c.n_agents])
+        self.assertGreater(achievable, w.formation_one_initial_score)
         self.assertEqual(len(w.formation_centers), 2)
         np.testing.assert_array_equal(w.target_formation, [0, 0, 0, 1, 1])
         route = w.formation_centers[0] - w.friendly_center
@@ -182,10 +191,11 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(w.target_life[0], 0)
         self.assertFalse(terminated)
         np.testing.assert_array_equal(w.agent_active, [False, False, True, True])
+        np.testing.assert_allclose(w.last_damage_by_agent, [2.5, 2.5, 0, 0])
         self.assertTrue(np.all(w.observation[1] == 0))
 
         metrics = w.metrics()
-        self.assertFalse(metrics["mission_success"])
+        self.assertTrue(metrics["mission_success"])
         self.assertEqual(w.score, 5)
         np.testing.assert_array_equal(w.agent_active, [False, False, True, True])
 
@@ -206,10 +216,12 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(terminated)
         self.assertEqual(w.target_life[0], 1)
         self.assertAlmostEqual(float(reward.sum()), 0.0)
+        np.testing.assert_allclose(w.last_damage_by_agent, [2.5, 0])
         np.testing.assert_array_equal(w.agent_active, [False, True])
         w.pos[1] = w.targets[0]
         w._sense()
         w.step(action(w))
+        np.testing.assert_allclose(w.last_damage_by_agent, [0, 0])
         _, reward, terminated, _, _ = w.step(action(w))
         self.assertFalse(terminated)
         self.assertEqual(w.target_life[0], 0)
@@ -299,6 +311,18 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(w.metrics()['agents_expended'], 2)
         self.assertAlmostEqual(float(reward.sum()), 0.0)
 
+    def test_snapshot_records_loiter_visualization_state(self):
+        w = World(compact(n_agents=1, min_agents=1, n_targets=1, min_targets=1,
+                          strike_probability=1, strike_range=1,
+                          strike_steps_per_life=3, penalty_time=0))
+        w.reset(31)
+        w.pos[0] = w.targets[0]
+        w.mem_pos[0, 0] = w.targets[0]
+        w.step(action(w))
+        frame = w.snapshot()
+        self.assertEqual(frame["strike_progress"], [1])
+        self.assertEqual(frame["strike_participants"], [[True]])
+
     def test_all_active_drones_always_know_exact_live_target_state(self):
         w = World(compact(n_agents=1, min_agents=1, n_targets=1, min_targets=1,
                           sensor_range=.1, sensor_fov_deg=1,
@@ -364,6 +388,29 @@ class WorldTests(unittest.TestCase):
         _, reward, terminated, _, _ = w.step(action(w, 1))
         self.assertFalse(terminated)
         self.assertAlmostEqual(float(reward.sum()), .03)
+
+    def test_equal_baseline_is_success_without_failure_penalty(self):
+        w = World(compact(n_agents=1, min_agents=1, n_targets=1, min_targets=1,
+                          strike_probability=1, strike_range=1, horizon=2,
+                          strike_steps_per_life=1, penalty_time=0,
+                          mission_failure_penalty=10))
+        w.reset(34)
+        w.target_type[0], w.target_life[0], w.target_score[0] = 2, 1, 2
+        w.mem_type[:, 0], w.mem_life[:, 0] = 2, 1
+        w.initial_score = w.formation_one_initial_score = 2
+        w.pos[0] = w.targets[0]
+        w._sense()
+
+        _, reward, _, truncated, metrics = w.step(action(w))
+        self.assertFalse(truncated)
+        self.assertEqual(metrics['score'], metrics['baseline_score'])
+        self.assertTrue(metrics['mission_success'])
+        self.assertAlmostEqual(float(reward.sum()), 0.0)
+
+        _, reward, _, truncated, metrics = w.step(action(w))
+        self.assertTrue(truncated)
+        self.assertTrue(metrics['mission_success'])
+        self.assertAlmostEqual(float(reward.sum()), 0.0)
 
     def test_positive_margin_does_not_terminate_with_forces_remaining(self):
         w = World(compact(n_agents=2, min_agents=2, n_targets=2, min_targets=2,

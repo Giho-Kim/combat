@@ -1,8 +1,8 @@
 """CTDE MAPPO for cooperative strike-target prioritization.
 
-Every active drone chooses one known, live target on every simulation step.
-The environment resolves that choice into a strike approach, so the policy's
-only job is target priority and multi-drone allocation.
+Every active drone emits preferences over known, live targets on every step.
+A capacity-aware resolver converts them to the joint strike assignment, so the
+policy's only job is target priority and multi-drone allocation.
 """
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from .env import SELF_FEATURES, TARGET_FEATURES, strike_action
 
 
 class StrikeActorCritic(nn.Module):
-    """Decentralized shared actor and centralized joint-observation critic."""
+    """Shared local-logit actor and centralized joint-observation critic."""
     def __init__(self, obs_dim, n_targets, n_agents, hidden=128):
         super().__init__()
         self.obs_dim = obs_dim
@@ -39,11 +39,14 @@ class StrikeActorCritic(nn.Module):
         selectable = SELF_FEATURES + ids * TARGET_FEATURES + 3
         return obs[..., selectable] > 0
 
-    def distributions(self, obs, agent_id=None, locked_target=None):
+    def actor_logits(self, obs, agent_id=None):
         if agent_id is None:
             agent_id = torch.arange(len(obs), device=obs.device)
         identity = torch.nn.functional.one_hot(agent_id.long(), self.n_agents).to(obs.dtype)
         h = self.actor_body(torch.cat([obs, identity], dim=-1))
+        return self.target_head(h)
+
+    def valid_target_mask(self, obs):
         mask = self.target_mask(obs)
         # After all targets are destroyed, keep a harmless fallback action so
         # the fixed-horizon episode can continue without an invalid Categorical.
@@ -51,36 +54,106 @@ class StrikeActorCritic(nn.Module):
         if empty.any():
             mask = mask.clone()
             mask[empty, 0] = True
+        return mask
+
+    def distributions(self, obs, agent_id=None, locked_target=None, action_mask=None):
+        logits = self.actor_logits(obs, agent_id)
+        mask = self.valid_target_mask(obs)
         if locked_target is not None:
             locked_target = torch.as_tensor(locked_target, device=obs.device, dtype=torch.long)
             safe_target = locked_target.clamp(min=0)
             lock_valid = (locked_target >= 0) & mask.gather(-1, safe_target.unsqueeze(-1)).squeeze(-1)
             forced = torch.nn.functional.one_hot(safe_target, self.n_targets).bool()
             mask = torch.where(lock_valid.unsqueeze(-1), forced, mask)
-        logits = self.target_head(h).masked_fill(~mask, -1e9)
-        return Categorical(logits=logits)
+        if action_mask is not None:
+            action_mask = torch.as_tensor(action_mask, device=obs.device, dtype=torch.bool)
+            mask = mask & action_mask
+        return Categorical(logits=logits.masked_fill(~mask, -1e9))
 
     def values(self, state, agent_id):
-        # A single team value must also be meaningful after an individual
-        # drone disappears. Agent identity is relevant only to the actor.
+        # Keep one common baseline so local damage-credit differences remain
+        # in the actor advantage instead of being explained away by identity.
         identity = state.new_zeros((*state.shape[:-1], self.n_agents))
         h = self.critic_body(torch.cat([state, identity], dim=-1))
         return self.value_head(h).squeeze(-1)
 
     def act(self, obs, deterministic=False, locked_target=None, agent_id=None):
-        dist = self.distributions(obs, agent_id, locked_target)
-        target = dist.probs.argmax(-1) if deterministic else dist.sample()
-        return strike_action(target.cpu().numpy()), {"logp": dist.log_prob(target)}
+        if agent_id is None:
+            agent_id = torch.arange(len(obs), device=obs.device)
+        logits = self.actor_logits(obs, agent_id)
+        base_mask = self.valid_target_mask(obs)
+        active = obs.abs().sum(dim=-1) > 0
+        remaining_value = torch.stack([
+            obs[:, SELF_FEATURES + j * TARGET_FEATURES + 2]
+            for j in range(self.n_targets)], dim=-1).max(dim=0).values
+        capacity = torch.where(remaining_value > .5, 2, 1)
+        capacity = torch.where(remaining_value > 0, capacity, 0).long()
+        if locked_target is None:
+            locked_target = torch.full((len(obs),), -1, device=obs.device, dtype=torch.long)
+        else:
+            locked_target = torch.as_tensor(
+                locked_target, device=obs.device, dtype=torch.long)
 
-    def evaluate_actions(self, obs, agent_id, target, locked_target):
-        dist = self.distributions(obs, agent_id, locked_target)
+        target = torch.zeros(len(obs), device=obs.device, dtype=torch.long)
+        logp = torch.zeros(len(obs), device=obs.device, dtype=obs.dtype)
+        action_mask = torch.zeros_like(base_mask)
+        safe_locked = locked_target.clamp(min=0)
+        locked = (active & (locked_target >= 0)
+                  & base_mask.gather(-1, safe_locked.unsqueeze(-1)).squeeze(-1))
+        for index in torch.nonzero(locked, as_tuple=False).flatten().tolist():
+            chosen = int(locked_target[index])
+            if base_mask[index, chosen]:
+                target[index] = chosen
+                action_mask[index, chosen] = True
+                capacity[chosen] = torch.clamp(capacity[chosen] - 1, min=0)
+
+        # Resolve simultaneous preferences in stable agent-ID order. This
+        # preserves the decentralized logits while preventing target-capacity
+        # overflow in the joint action actually sent to the environment.
+        free = torch.nonzero(active & ~locked, as_tuple=False).flatten().tolist()
+        free.sort(key=lambda index: int(agent_id[index]))
+        # If useful life slots outnumber drones, exclude the lowest-value
+        # slots. The actor still optimizes assignment geometry among the
+        # score-maximal targets instead of spending an expendable drone on a
+        # dominated target.
+        per_life_value = torch.where(
+            remaining_value > .5, remaining_value / 2, remaining_value)
+        slot_values = torch.repeat_interleave(per_life_value, capacity)
+        if len(slot_values) > len(free) and free:
+            cutoff = slot_values.sort(descending=True).values[len(free) - 1]
+            priority_mask = per_life_value >= cutoff
+        else:
+            priority_mask = capacity > 0
+        for index in free:
+            available = base_mask[index] & (capacity > 0) & priority_mask
+            if not available.any():
+                available = base_mask[index] & (capacity > 0)
+            if not available.any():
+                available = base_mask[index]
+            conditional_logits = logits[index].masked_fill(~available, -1e9)
+            conditional_logp = torch.log_softmax(conditional_logits, dim=-1)
+            chosen = (conditional_logits.argmax(-1) if deterministic else
+                      torch.multinomial(conditional_logp.exp(), 1).squeeze(0))
+            target[index] = chosen
+            logp[index] = conditional_logp[chosen]
+            action_mask[index] = available
+            capacity[chosen] = torch.clamp(capacity[chosen] - 1, min=0)
+
+        inactive = torch.nonzero(~active, as_tuple=False).flatten()
+        if len(inactive):
+            action_mask[inactive, 0] = True
+        return strike_action(target.cpu().numpy()), {
+            "logp": logp, "action_mask": action_mask}
+
+    def evaluate_actions(self, obs, agent_id, target, action_mask):
+        dist = self.distributions(obs, agent_id, action_mask=action_mask)
         return dist.log_prob(target), dist.entropy()
 
 
 def save_checkpoint(path, model, metadata):
     torch.save({"state_dict": model.state_dict(), "obs_dim": model.obs_dim,
                 "n_targets": model.n_targets, "n_agents": model.n_agents,
-                "architecture": "strike_mappo_v11",
+                "architecture": "strike_mappo_v14",
                 "metadata": metadata}, Path(path))
 
 
@@ -93,7 +166,7 @@ def load_checkpoint(path, model):
     else:
         torch.serialization.add_safe_globals([TorchVersion])
         payload = torch.load(Path(path), map_location="cpu", weights_only=True)
-    if payload.get("architecture") != "strike_mappo_v11":
+    if payload.get("architecture") != "strike_mappo_v14":
         raise ValueError("Checkpoint is not a strike MAPPO model; retrain it")
     if (payload["obs_dim"] != model.obs_dim or payload["n_targets"] != model.n_targets
             or payload["n_agents"] != model.n_agents):
@@ -111,7 +184,7 @@ def critic_state(world, obs):
     return np.repeat(state[None], world.c.n_agents, axis=0)
 
 
-def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.99):
+def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=1.0):
     advantage = np.zeros_like(reward)
     carry = np.zeros(reward.shape[1], dtype=np.float32)
     for t in reversed(range(len(reward))):
@@ -121,7 +194,15 @@ def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.99):
     return advantage, advantage + value
 
 
-def _batch(obs, state, agent_id, target, locked_target, logp, advantage, returns,
+def _learning_rewards(team_reward, damage_by_agent, baseline_score, damage_credit_scale):
+    """Shared mission return plus normalized local credit for caused damage."""
+    damage_by_agent = np.asarray(damage_by_agent, dtype=np.float32)
+    reward = np.full(damage_by_agent.shape, team_reward, dtype=np.float32)
+    reward += damage_credit_scale * damage_by_agent / max(1.0, baseline_score)
+    return reward
+
+
+def _batch(obs, state, agent_id, target, action_mask, logp, advantage, returns,
            active, decision):
     mask = np.asarray(active, dtype=bool).reshape(-1)
     obs_array = np.asarray(obs)
@@ -129,7 +210,8 @@ def _batch(obs, state, agent_id, target, locked_target, logp, advantage, returns
             torch.as_tensor(np.asarray(state).reshape(-1, np.asarray(state).shape[-1])[mask], dtype=torch.float32),
             torch.as_tensor(np.asarray(agent_id).reshape(-1)[mask], dtype=torch.long),
             torch.as_tensor(np.asarray(target).reshape(-1)[mask], dtype=torch.long),
-            torch.as_tensor(np.asarray(locked_target).reshape(-1)[mask], dtype=torch.long),
+            torch.as_tensor(np.asarray(action_mask).reshape(
+                -1, np.asarray(action_mask).shape[-1])[mask], dtype=torch.bool),
             torch.as_tensor(np.asarray(logp).reshape(-1)[mask], dtype=torch.float32),
             torch.as_tensor(np.asarray(advantage).reshape(-1)[mask], dtype=torch.float32),
             torch.as_tensor(np.asarray(returns).reshape(-1)[mask], dtype=torch.float32),
@@ -146,14 +228,14 @@ def _scale_actor_advantage(advantage, decision):
 
 
 def _ppo_update(model, optimizer, tensors, epochs, minibatch_size):
-    obs, state, agent_id, target, locked_target, old_logp, advantage, returns, decision = tensors
+    obs, state, agent_id, target, action_mask, old_logp, advantage, returns, decision = tensors
     advantage = _scale_actor_advantage(advantage, decision)
     for _ in range(epochs):
         order = torch.randperm(len(obs))
         for start in range(0, len(obs), minibatch_size):
             idx = order[start:start + minibatch_size]
             logp, entropy = model.evaluate_actions(
-                obs[idx], agent_id[idx], target[idx], locked_target[idx])
+                obs[idx], agent_id[idx], target[idx], action_mask[idx])
             value = model.values(state[idx], agent_id[idx])
             ratio = (logp - old_logp[idx]).exp()
             clipped = ratio.clamp(.8, 1.2)
@@ -191,11 +273,15 @@ def _interquartile_mean(values):
 def _summarize(rows):
     keys = ("team_return", "mission_success", "score", "baseline_score", "destroyed_fraction",
             "score_auc", "steps")
-    return {key: _interquartile_mean([row[key] for row in rows]) for key in keys}
+    return {
+        key: (float(np.mean([row[key] for row in rows]))
+              if key == "mission_success"
+              else _interquartile_mean([row[key] for row in rows]))
+        for key in keys}
 
 
 def evaluate_model(model, config, episodes=5, seed=10000):
-    """Evaluate the current decentralized actors on held-out scenario seeds."""
+    """Evaluate the current actor/resolver on held-out scenario seeds."""
     from .env import World
     rows = []
     with torch.no_grad():
@@ -249,7 +335,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
     model = StrikeActorCritic(world.obs_dim, config.n_targets, config.n_agents)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     completed, episode_rows, evaluation_rows = 0, [], []
-    best_return = -float("inf")
+    best_key = (-float("inf"), -float("inf"))
     next_eval = eval_interval if eval_interval > 0 else None
     next_checkpoint = checkpoint_interval if checkpoint_dir is not None else None
     progress_bar = tqdm(total=total_agent_transitions, desc="Train", unit="transition",
@@ -258,7 +344,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
     while completed < total_agent_transitions:
         steps = min(rollout_steps, max(1, int(np.ceil(
             (total_agent_transitions - completed) / config.n_agents))))
-        observations, states, agent_ids, targets, locks, logps, values = ([] for _ in range(7))
+        observations, states, agent_ids, targets, action_masks, logps, values = ([] for _ in range(7))
         next_values, rewards, dones, active, decisions = [], [], [], [], []
         for _ in range(steps):
             locked_target = world.locked_targets()
@@ -284,13 +370,17 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
             states.append(state)
             agent_ids.append(np.arange(config.n_agents))
             targets.append(action["target"].copy())
-            locks.append(lock_before_action)
+            action_masks.append(stats["action_mask"].numpy())
             logps.append(stats["logp"].numpy())
             values.append(value.numpy())
             next_values.append(next_value.numpy())
-            # Credit earlier choices with the entire cooperative outcome,
-            # including rewards/penalties after that drone has disappeared.
-            rewards.append(np.full(config.n_agents, reward.sum(), dtype=np.float32))
+            # Preserve the full cooperative outcome for every earlier choice,
+            # including penalties after a drone disappears. Add local damage
+            # credit solely as a learning signal so useful allocations do not
+            # receive the same advantage as redundant ones.
+            rewards.append(_learning_rewards(
+                reward.sum(), world.last_damage_by_agent,
+                world.formation_one_initial_score, config.damage_credit_scale))
             dones.append(np.full(config.n_agents, env_done, dtype=float))
             active.append(active_before)
             decisions.append(lock_before_action < 0)
@@ -303,8 +393,9 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
 
         advantage, returns = _advantages(np.asarray(rewards), np.asarray(values),
                                          np.asarray(next_values), np.asarray(dones),
-                                         gamma=config.discount_gamma)
-        tensors = _batch(observations, states, agent_ids, targets, locks, logps,
+                                         gamma=config.discount_gamma,
+                                         gae_lambda=config.gae_lambda)
+        tensors = _batch(observations, states, agent_ids, targets, action_masks, logps,
                          advantage, returns, active, decisions)
         _ppo_update(model, optimizer, tensors, epochs, minibatch_size)
         count = int(np.asarray(active).sum())
@@ -327,18 +418,22 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
                 "heuristic": evaluate_baseline(HeuristicPolicy, config, eval_episodes, eval_seed),
                 "mappo": evaluate_model(model, config, eval_episodes, eval_seed),
             }
+            mappo_success = evaluations["mappo"]["mission_success"]
             mappo_return = evaluations["mappo"]["team_return"]
-            if best_path is not None and mappo_return > best_return:
-                best_return = mappo_return
+            candidate_key = (mappo_success, mappo_return)
+            if best_path is not None and candidate_key > best_key:
+                best_key = candidate_key
                 save_checkpoint(best_path, model, {
-                    "best_metric": "interquartile_mean_team_return",
-                    "best_value": best_return,
+                    "best_metric": "mean_success_then_interquartile_mean_team_return",
+                    "best_success": mappo_success,
+                    "best_value": mappo_return,
                     "agent_transitions": completed,
                     "eval_episodes": eval_episodes,
                     "eval_seed": eval_seed,
                 })
                 progress_bar.write(
-                    f"Saved best checkpoint: {best_path} (iqm_return={best_return:.3f})")
+                    f"Saved best checkpoint: {best_path} "
+                    f"(success={mappo_success:.3f}, iqm_return={mappo_return:.3f})")
             for policy_name, evaluation in evaluations.items():
                 evaluation_rows.append(dict(agent_transitions=completed, policy=policy_name,
                                             episodes=eval_episodes, seed=eval_seed, **evaluation))

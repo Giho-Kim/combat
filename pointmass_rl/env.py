@@ -29,8 +29,8 @@ def split_strike_action(action):
 @dataclass
 class Config:
     # Fixed tensor capacities; active counts are sampled per episode.
-    n_agents: int = 5
-    min_agents: int = 5
+    n_agents: int = 6
+    min_agents: int = 6
     n_targets: int = 5
     min_targets: int = 5
     randomize_counts: bool = False
@@ -56,7 +56,9 @@ class Config:
     strike_steps_per_life: int = 10
     penalty_time: float = 0.1
     discount_gamma: float = 0.99
+    gae_lambda: float = 1.0
     mission_failure_penalty: float = 100.0
+    damage_credit_scale: float = 50.0
 
     def __post_init__(self):
         if not 1 <= self.n_agents <= 10:
@@ -86,10 +88,12 @@ class Config:
         if not 0 < self.formation_two_progress < 1:
             raise ValueError("formation_two_progress must be in (0, 1)")
         if min(self.position_noise, self.initial_intel_noise, self.penalty_time,
-               self.mission_failure_penalty) < 0:
+               self.mission_failure_penalty, self.damage_credit_scale) < 0:
             raise ValueError("noise, drain and penalties must be nonnegative")
         if not 0 < self.discount_gamma <= 1:
             raise ValueError("discount_gamma must be in (0, 1]")
+        if not 0 < self.gae_lambda <= 1:
+            raise ValueError("gae_lambda must be in (0, 1]")
 
     @property
     def speed(self):
@@ -280,6 +284,7 @@ class World:
         # heading to the same target, but do not disappear with that strike.
         self.strike_participants = np.zeros((c.n_targets, self.n), dtype=bool)
         self.last_agent_terminated = np.zeros(self.n, dtype=bool)
+        self.last_damage_by_agent = np.zeros(self.n, dtype=float)
         self.initial_score = int(self.target_score[self.target_exists].sum())
         formation_one = self.target_exists & (self.target_formation == 0)
         self.formation_one_initial_score = int(self.target_score[formation_one].sum())
@@ -379,7 +384,6 @@ class World:
             self.target_vel[j] = velocity
 
     def _resolve_strikes(self, target_ids):
-        rewards = np.zeros(self.n, dtype=float)
         for j in np.flatnonzero(self.active & ~self.destroyed):
             required = min(2 if self.target_type[j] == 1 else 1,
                            int(self.target_life[j]))
@@ -413,13 +417,14 @@ class World:
             self.target_life[j] -= damage
             self.mem_life[:, j] = self.target_life[j]
             initial_life = 2 if self.target_type[j] == 1 else 1
-            self.score += self.target_score[j] * damage / initial_life
+            damage_value = self.target_score[j] * damage / initial_life
+            self.score += damage_value
+            self.last_damage_by_agent[participants] += damage_value / participants.sum()
             if self.target_life[j] <= 0:
                 self.destroyed[j] = True
                 self.active[j] = False
                 self.target_destroy_step[j] = self.t
             self.agent_active[participants] = False
-        return rewards
 
     def step(self, action):
         if self.done:
@@ -430,6 +435,7 @@ class World:
         targets = self.committed_targets(proposed_targets)
         c = self.c
         reward = np.zeros(self.n, dtype=float)
+        self.last_damage_by_agent.fill(0.0)
         step_active = self.agent_active.copy()
         agent_count = int(step_active.sum())
         old_pos = self.pos.copy()
@@ -448,14 +454,14 @@ class World:
         self.t += 1
         # Resolve an approach completed during this decision interval before
         # advancing the target to the next interval.
-        reward += self._resolve_strikes(targets)
+        self._resolve_strikes(targets)
         # B is fixed by formation 1's initial type/life composition. D is
         # cumulative type-weighted life damage across both formations.
         margin = ((self.formation_one_initial_score - self.score)
                   / max(1, self.formation_one_initial_score))
         team_step_reward = -c.penalty_time * margin
         failure_end = (self.t >= c.horizon
-                       and self.score <= self.formation_one_initial_score)
+                       and self.score < self.formation_one_initial_score)
         if failure_end:
             team_step_reward -= c.mission_failure_penalty
         if agent_count:
@@ -484,7 +490,7 @@ class World:
         initial = self.target_exists
         return dict(team_return=self.rewards_total, score=float(self.score),
             baseline_score=float(self.formation_one_initial_score),
-            mission_success=bool(self.score > self.formation_one_initial_score),
+            mission_success=bool(self.score >= self.formation_one_initial_score),
             destroyed_fraction=float(self.destroyed[initial].mean()) if initial.any() else 1.0,
             discovery_fraction=float(self.discovered[self.target_exists].mean()),
             area_coverage=float(self.coverage.any(axis=0).mean()),
@@ -504,4 +510,5 @@ class World:
             target_type=self.target_type.tolist(), target_life=self.target_life.tolist(),
             target_score=self.target_score.tolist(), target_destroy_step=self.target_destroy_step.tolist(),
             visible=self.visible.tolist(), selected_target=self.selected_target.tolist(),
-            goal_positions=self.last_goal.tolist(), metrics=self.metrics())
+            goal_positions=self.last_goal.tolist(), strike_progress=self.strike_progress.tolist(),
+            strike_participants=self.strike_participants.tolist(), metrics=self.metrics())

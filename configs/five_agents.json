@@ -1,6 +1,6 @@
 {
-  "n_agents": 6,
-  "min_agents": 6,
+  "n_agents": 5,
+  "min_agents": 5,
   "n_targets": 5,
   "min_targets": 5,
   "randomize_counts": false,

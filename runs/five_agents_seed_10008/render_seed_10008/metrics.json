@@ -1,0 +1,25 @@
+{
+  "training_seed": 10008,
+  "scenario_seed": 10008,
+  "B": 12.0,
+  "D": 12.0,
+  "mission_success": false,
+  "first_score_step": 54,
+  "all_agents_expended_step": 95,
+  "strike_attempts": 3,
+  "strike_hits": 3,
+  "target_switches_by_agent": {
+    "0": 0,
+    "1": 0,
+    "2": 0,
+    "3": 1,
+    "4": 0
+  },
+  "strike_participants": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ]
+}

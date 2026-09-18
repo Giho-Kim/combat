@@ -1,0 +1,47 @@
+{
+  "training_seed": 10000,
+  "scenario_seeds": "10000-10999",
+  "episodes": 1000,
+  "successes": 1000,
+  "success": 1.0,
+  "mean_score": 11.999,
+  "min_score": 11.5,
+  "max_finish": 129,
+  "by_baseline": {
+    "5": {
+      "n": 85,
+      "successes": 85,
+      "success": 1.0,
+      "mean_score": 12.0,
+      "max_finish": 114
+    },
+    "8": {
+      "n": 432,
+      "successes": 432,
+      "success": 1.0,
+      "mean_score": 12.0,
+      "max_finish": 112
+    },
+    "9": {
+      "n": 200,
+      "successes": 200,
+      "success": 1.0,
+      "mean_score": 11.995,
+      "max_finish": 129
+    },
+    "11": {
+      "n": 83,
+      "successes": 83,
+      "success": 1.0,
+      "mean_score": 12.0,
+      "max_finish": 120
+    },
+    "12": {
+      "n": 200,
+      "successes": 200,
+      "success": 1.0,
+      "mean_score": 12.0,
+      "max_finish": 112
+    }
+  }
+}

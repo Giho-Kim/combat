@@ -1,0 +1,368 @@
+{
+  "episodes": 30,
+  "summary": {
+    "random": {
+      "team_return": {
+        "iqm": -91.1720892255892,
+        "mean": -77.00083207070705,
+        "std": 53.359700923240396,
+        "ci95_halfwidth": 19.094523746826827,
+        "n": 30
+      },
+      "score": {
+        "iqm": 6.633333333333334,
+        "mean": 6.616666666666666,
+        "std": 3.45583797246833,
+        "ci95_halfwidth": 1.2366557362344968,
+        "n": 30
+      },
+      "baseline_score": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "mission_success": {
+        "iqm": 0.23333333333333334,
+        "mean": 0.36666666666666664,
+        "std": 0.4901325178535609,
+        "ci95_halfwidth": 0.17539166898086325,
+        "n": 30
+      },
+      "destroyed_fraction": {
+        "iqm": 0.36000000000000004,
+        "mean": 0.36,
+        "std": 0.21908902300206645,
+        "ci95_halfwidth": 0.0784,
+        "n": 30
+      },
+      "discovery_fraction": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "area_coverage": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "first_detection_step": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "active_agents": {
+        "iqm": 2.8,
+        "mean": 2.9,
+        "std": 1.6049492418657723,
+        "ci95_halfwidth": 0.5743237102348562,
+        "n": 30
+      },
+      "first_score_step": {
+        "iqm": 80.51851851851852,
+        "mean": 88.62962962962963,
+        "std": 33.36297827065682,
+        "ci95_halfwidth": 12.584587997213813,
+        "n": 27
+      },
+      "score_auc": {
+        "iqm": 0.27472887205387214,
+        "mean": 0.31662506313131317,
+        "std": 0.24228083201795442,
+        "ci95_halfwidth": 0.08669908227227097,
+        "n": 30
+      },
+      "targets": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "success_threshold": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "strike_attempts": {
+        "iqm": 2.933333333333333,
+        "mean": 2.7,
+        "std": 1.393333883297477,
+        "ci95_halfwidth": 0.4985981267052886,
+        "n": 30
+      },
+      "strike_hits": {
+        "iqm": 2.933333333333333,
+        "mean": 2.7,
+        "std": 1.393333883297477,
+        "ci95_halfwidth": 0.4985981267052886,
+        "n": 30
+      },
+      "agents_expended": {
+        "iqm": 3.2,
+        "mean": 3.1,
+        "std": 1.6049492418657723,
+        "ci95_halfwidth": 0.5743237102348562,
+        "n": 30
+      },
+      "steps": {
+        "iqm": 200.0,
+        "mean": 200.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      }
+    },
+    "heuristic": {
+      "team_return": {
+        "iqm": -0.7306523569023575,
+        "mean": 0.7447659932660009,
+        "std": 7.818418663716611,
+        "ci95_halfwidth": 2.797785187209497,
+        "n": 30
+      },
+      "score": {
+        "iqm": 14.0,
+        "mean": 14.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "baseline_score": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "mission_success": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "destroyed_fraction": {
+        "iqm": 0.8,
+        "mean": 0.8000000000000003,
+        "std": 2.2584051416334807e-16,
+        "ci95_halfwidth": 8.081599008380939e-17,
+        "n": 30
+      },
+      "discovery_fraction": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "area_coverage": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "first_detection_step": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "active_agents": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "first_score_step": {
+        "iqm": 53.93333333333333,
+        "mean": 54.1,
+        "std": 5.984750736606357,
+        "ci95_halfwidth": 2.141615546596841,
+        "n": 30
+      },
+      "score_auc": {
+        "iqm": 0.9634673821548813,
+        "mean": 1.0372382996633,
+        "std": 0.3909209331858328,
+        "ci95_halfwidth": 0.13988925936047567,
+        "n": 30
+      },
+      "targets": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "success_threshold": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "strike_attempts": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "strike_hits": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "agents_expended": {
+        "iqm": 6.0,
+        "mean": 6.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "steps": {
+        "iqm": 200.0,
+        "mean": 200.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      }
+    },
+    "mappo": {
+      "team_return": {
+        "iqm": -0.6912415824915824,
+        "mean": 0.7625824915824999,
+        "std": 7.8106782392935745,
+        "ci95_halfwidth": 2.795015311902872,
+        "n": 30
+      },
+      "score": {
+        "iqm": 14.0,
+        "mean": 14.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "baseline_score": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "mission_success": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "destroyed_fraction": {
+        "iqm": 0.8,
+        "mean": 0.8000000000000003,
+        "std": 2.2584051416334807e-16,
+        "ci95_halfwidth": 8.081599008380939e-17,
+        "n": 30
+      },
+      "discovery_fraction": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "area_coverage": {
+        "iqm": 1.0,
+        "mean": 1.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "first_detection_step": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "active_agents": {
+        "iqm": 0.0,
+        "mean": 0.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "first_score_step": {
+        "iqm": 54.6,
+        "mean": 55.06666666666667,
+        "std": 5.889402131903065,
+        "ci95_halfwidth": 2.1074954866033853,
+        "n": 30
+      },
+      "score_auc": {
+        "iqm": 0.9654379208754199,
+        "mean": 1.038129124579125,
+        "std": 0.390533911964681,
+        "ci95_halfwidth": 0.13975076559514443,
+        "n": 30
+      },
+      "targets": {
+        "iqm": 5.0,
+        "mean": 5.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "success_threshold": {
+        "iqm": 8.9,
+        "mean": 8.933333333333334,
+        "std": 2.377093753440044,
+        "ci95_halfwidth": 0.8506320751083073,
+        "n": 30
+      },
+      "strike_attempts": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "strike_hits": {
+        "iqm": 4.0,
+        "mean": 4.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "agents_expended": {
+        "iqm": 6.0,
+        "mean": 6.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      },
+      "steps": {
+        "iqm": 200.0,
+        "mean": 200.0,
+        "std": 0.0,
+        "ci95_halfwidth": 0.0,
+        "n": 30
+      }
+    }
+  }
+}

@@ -8,7 +8,7 @@ try:
     import torch
     from pointmass_rl.strike_ppo import (StrikeActorCritic, load_checkpoint,
                                         save_checkpoint, train_mappo, critic_state, _advantages,
-                                        _scale_actor_advantage)
+                                        _learning_rewards, _scale_actor_advantage, _summarize)
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -25,6 +25,22 @@ class StrikePolicyTests(unittest.TestCase):
             self.assertTrue(torch.isfinite(scaled).all())
             self.assertTrue((scaled.sign() == advantage.sign()).all())
             self.assertTrue((scaled.abs() > 0).all())
+
+    def test_damage_credit_scale_must_be_nonnegative(self):
+        with self.assertRaises(ValueError):
+            Config(damage_credit_scale=-1)
+        with self.assertRaises(ValueError):
+            Config(gae_lambda=0)
+
+    def test_learning_reward_keeps_team_outcome_and_adds_local_credit(self):
+        reward = _learning_rewards(-2.0, [2.5, 0.0, 2.0], 10.0, 50.0)
+        np.testing.assert_allclose(reward, [10.5, -2.0, 8.0])
+
+    def test_binary_success_summary_is_raw_mean(self):
+        rows = [dict(team_return=0, mission_success=value, score=0,
+                     baseline_score=1, destroyed_fraction=0, score_auc=0, steps=1)
+                for value in (0, 0, 1, 1, 1)]
+        self.assertAlmostEqual(_summarize(rows)["mission_success"], .6)
 
     def test_team_value_and_delayed_failure_credit(self):
         w = World(Config())
@@ -52,6 +68,15 @@ class StrikePolicyTests(unittest.TestCase):
         self.assertTrue(np.all((target >= 0) & (target < c.n_targets)))
         for value in stats.values():
             self.assertTrue(torch.isfinite(value).all())
+        ids = torch.arange(c.n_agents)
+        replay_logp, _ = model.evaluate_actions(
+            obs, ids, torch.as_tensor(target), stats["action_mask"])
+        torch.testing.assert_close(replay_logp, stats["logp"])
+        capacity = np.minimum(np.where(w.target_type == 1, 2, 1), w.target_life)
+        counts = np.bincount(target[np.any(obs.numpy() != 0, axis=1)],
+                             minlength=c.n_targets)
+        self.assertTrue(np.all(counts <= capacity))
+        self.assertFalse(np.any(w.target_type[target] == 3))
         locked = action["target"].copy()
         locked_action, _ = model.act(obs + torch.randn_like(obs) * .01,
                                      deterministic=True, locked_target=locked)
