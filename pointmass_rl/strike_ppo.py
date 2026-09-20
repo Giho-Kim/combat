@@ -132,14 +132,6 @@ def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.95):
     return advantage, advantage + value
 
 
-def _learning_rewards(team_reward, damage_by_agent, baseline_score, damage_credit_scale):
-    """Shared mission return plus normalized local credit for caused damage."""
-    damage_by_agent = np.asarray(damage_by_agent, dtype=np.float32)
-    reward = np.full(damage_by_agent.shape, team_reward, dtype=np.float32)
-    reward += damage_credit_scale * damage_by_agent / max(1.0, baseline_score)
-    return reward
-
-
 def _batch(obs, state, target, action_mask, logp, advantage, returns,
            active, decision):
     mask = np.asarray(active, dtype=bool).reshape(-1)
@@ -346,13 +338,9 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
             logps.append(stats["logp"].numpy())
             values.append(value.numpy())
             next_values.append(next_value.numpy())
-            # Preserve the full cooperative outcome for every earlier choice,
-            # including penalties after a drone disappears. Add local damage
-            # credit solely as a learning signal so useful allocations do not
-            # receive the same advantage as redundant ones.
-            rewards.append(_learning_rewards(
-                reward.sum(), world.last_damage_by_agent,
-                world.formation_one_initial_score, config.damage_credit_scale))
+            # Use the same environment reward vector for training, evaluation,
+            # and logged returns.
+            rewards.append(reward.copy())
             dones.append(np.full(config.n_agents, env_done, dtype=float))
             active.append(active_before)
             decisions.append(lock_before_action < 0)

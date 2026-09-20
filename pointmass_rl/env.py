@@ -468,8 +468,10 @@ class World:
             reward[step_active] += team_step_reward / agent_count
         else:
             # Keep fixed-horizon team rewards observable after every drone has
-            # been expended; PPO consumes reward.sum() as the cooperative reward.
+            # been expended by distributing them over the fixed agent slots.
             reward += team_step_reward / self.n
+        reward += (c.damage_credit_scale * self.last_damage_by_agent
+                   / max(1, self.formation_one_initial_score))
         self.vel[~self.agent_active] = 0
         self.last_agent_terminated = step_active & ~self.agent_active
         if self.score > 0 and self.first_score_step is None:

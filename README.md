@@ -38,7 +38,7 @@ horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_f
 
 학습 알고리즘은 CTDE Strike MAPPO입니다. 공유 actor는 각 드론의 local observation에서 독립적으로 표적별 logit을 출력하고 local action mask 안에서 target을 선택합니다. 같은 표적을 동시에 고른 경우에도 environment가 strike range, 거리, 타입별 참여 상한으로 실제 participant를 결정합니다. PPO에는 실제 선택 때 사용한 local mask와 log-probability를 저장하므로 update도 같은 분포를 사용합니다. centralized critic은 joint observation과 타격 진행도로 공통 baseline을 추정합니다. 소진 전 선택에는 에피소드 종료까지의 팀 보상을 반영하며, 소진 이후 슬롯은 PPO loss에서 제외합니다.
 
-환경 보상과 평가의 `team_return`은 위 공식을 그대로 사용합니다. PPO의 학습 보상에만 드론별 damage credit `damage_credit_scale × (해당 드론이 감소시킨 가치 / B)`를 더합니다. 기본 scale은 50이며, 실제 피해를 만든 드론만 credit을 받으므로 같은 팀 보상을 공유하던 유효 배치와 잉여 배치를 구분할 수 있습니다. `damage_credit_scale=0`이면 기존 순수 팀 보상 학습으로 돌아갑니다. 이 shaping은 성공 판정과 모델 입력, 평가 return을 바꾸지 않습니다.
+환경·평가·PPO는 하나의 reward를 사용합니다. 각 드론 reward는 팀 보상 분배분에 드론별 damage credit `damage_credit_scale × (해당 드론이 감소시킨 가치 / B)`를 더한 값입니다. 기본 scale은 50이며, 실제 피해를 만든 드론만 credit을 받으므로 같은 팀 보상을 공유하던 유효 배치와 잉여 배치를 구분할 수 있습니다. `team_return`은 이 통합 reward의 드론 합을 에피소드 동안 누적한 값입니다. `damage_credit_scale=0`이면 순수 팀 보상으로 돌아갑니다.
 
 학습 중에는 `--eval-interval` agent transition마다 `--eval-seed`부터 시작하는 동일한 고정 평가 시나리오에서 random, heuristic, deterministic MAPPO를 모두 실행합니다. 성공률은 전체 평가 에피소드의 raw mean으로, 나머지 지표는 중앙 50% IQM으로 출력하고 `training_evaluations.csv`에 기록합니다. `--eval-interval 0`으로 중간 평가를 끌 수 있습니다.
 

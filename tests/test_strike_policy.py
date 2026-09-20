@@ -8,7 +8,7 @@ try:
     import torch
     from pointmass_rl.strike_ppo import (StrikeActorCritic, load_checkpoint,
                                         save_checkpoint, train_mappo, critic_state, _advantages,
-                                        _learning_rewards, _scale_actor_advantage, _summarize)
+                                        _scale_actor_advantage, _summarize)
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -31,10 +31,6 @@ class StrikePolicyTests(unittest.TestCase):
             Config(damage_credit_scale=-1)
         with self.assertRaises(ValueError):
             Config(gae_lambda=0)
-
-    def test_learning_reward_keeps_team_outcome_and_adds_local_credit(self):
-        reward = _learning_rewards(-2.0, [2.5, 0.0, 2.0], 10.0, 50.0)
-        np.testing.assert_allclose(reward, [10.5, -2.0, 8.0])
 
     def test_binary_success_summary_is_raw_mean(self):
         rows = [dict(team_return=0, mission_success=value, score=0,

@@ -37,7 +37,7 @@ horizon 도달 시 `D<B`이면 기본 `-100`의 임무 실패 패널티를 추�
 
 CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation만 받아 생존하며 알려진 표적의 logit을 계산하고 local action mask에서 독립적으로 target을 선택합니다. 같은 표적을 동시에 고른 경우에는 environment가 strike range, 거리, 남은 life와 타입별 참여 상한으로 실제 participant를 결정합니다. rollout에는 각 선택의 local mask와 log-probability를 저장합니다. centralized critic은 joint observation과 타격 진행도에서 공통 baseline을 계산합니다. 이렇게 드론별 damage credit 차이가 actor advantage에 남습니다. 할인율 `gamma=0.99`, `GAE lambda=0.95`로 advantage를 계산한 뒤 clipped PPO objective, centralized value loss, entropy bonus를 함께 최적화합니다.
 
-환경 보상과 평가용 `team_return`은 MDP 절의 공식을 유지합니다. PPO rollout에서 각 드론의 학습 보상은 공통 team reward에 `damage_credit_scale × local_damage / B`를 더한 값입니다. `local_damage`는 그 step에 해당 드론이 실제로 감소시킨 타입별 life 가치이며 기본 scale은 50입니다. 따라서 임무 성공·실패 결과는 모든 과거 선택에 계속 전달되지만, 실제 피해를 만든 배치는 추가로 직접 credit을 받습니다. 이 항은 learner 내부에서만 사용하므로 환경 return, 성공 판정, 관측을 바꾸지 않으며 scale 0으로 비활성화할 수 있습니다.
+환경·평가·PPO rollout은 하나의 reward를 사용합니다. 각 드론 reward는 팀 보상 분배분에 `damage_credit_scale × local_damage / B`를 더한 값입니다. `local_damage`는 그 step에 해당 드론이 실제로 감소시킨 타입별 life 가치이며 기본 scale은 50입니다. 따라서 임무 성공·실패 결과는 모든 과거 선택에 계속 전달되지만, 실제 피해를 만든 배치는 추가로 직접 credit을 받습니다. `team_return`은 이 통합 reward의 드론 합을 에피소드 동안 누적한 값이며, scale 0으로 순수 팀 보상으로 비활성화할 수 있습니다.
 
 접근 중에는 매 step 재선택을 허용하며 actor loss에 포함합니다. 실제 타격 참여자는 완료까지 action mask를 현재 표적 하나로 제한하고 actor loss에서 제외합니다. 관측의 자기 타격 진행도와 환경의 참여자 마스크를 통해 정책과 학습이 동일한 lock을 사용합니다. critic과 return은 매 step 계산합니다.
 

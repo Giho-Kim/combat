@@ -9,7 +9,7 @@ from pointmass_rl.policies import HeuristicPolicy
 def compact(**kwargs):
     values = dict(n_agents=3, min_agents=3, n_targets=2, min_targets=2,
                   randomize_counts=False, horizon=20,
-                  mission_failure_penalty=0)
+                  mission_failure_penalty=0, damage_credit_scale=0)
     values.update(kwargs)
     return Config(**values)
 
@@ -258,6 +258,20 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(terminated)
         self.assertTrue(truncated)
         self.assertAlmostEqual(float(reward.sum()), -10.1, places=6)
+
+    def test_damage_credit_is_part_of_environment_reward(self):
+        w = World(compact(n_agents=1, min_agents=1, n_targets=1, min_targets=1,
+                          strike_probability=1, strike_range=1,
+                          strike_steps_per_life=1, penalty_time=0,
+                          damage_credit_scale=50))
+        w.reset(35)
+        w.target_type[0], w.target_life[0], w.target_score[0] = 2, 1, 2
+        w.mem_type[:, 0], w.mem_life[:, 0] = 2, 1
+        w.formation_one_initial_score = 2
+        w.pos[0] = w.targets[0]
+        w._sense()
+        _, reward, _, _, _ = w.step(action(w))
+        self.assertAlmostEqual(float(reward.sum()), 50.0)
 
     def test_type_two_strike_participation_is_capped_at_one(self):
         w = World(compact(n_targets=1, min_targets=1,
