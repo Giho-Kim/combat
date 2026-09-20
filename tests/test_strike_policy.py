@@ -71,11 +71,8 @@ class StrikePolicyTests(unittest.TestCase):
         replay_logp, _ = model.evaluate_actions(
             obs, torch.as_tensor(target), stats["action_mask"])
         torch.testing.assert_close(replay_logp, stats["logp"])
-        capacity = np.minimum(np.where(w.target_type == 1, 2, 1), w.target_life)
-        counts = np.bincount(target[np.any(obs.numpy() != 0, axis=1)],
-                             minlength=c.n_targets)
-        self.assertTrue(np.all(counts <= capacity))
-        self.assertFalse(np.any(w.target_type[target] == 3))
+        self.assertTrue(np.all(stats["action_mask"].numpy()[
+            np.arange(c.n_agents), target]))
         locked = action["target"].copy()
         locked_action, _ = model.act(obs + torch.randn_like(obs) * .01,
                                      deterministic=True, locked_target=locked)

@@ -1,8 +1,7 @@
 """CTDE MAPPO for cooperative strike-target prioritization.
 
-Every active drone emits preferences over known, live targets on every step.
-A capacity-aware resolver converts them to the joint strike assignment, so the
-policy's only job is target priority and multi-drone allocation.
+Every active drone independently chooses a known, live target on every step.
+The environment resolves range, strike participation, and target capacity.
 """
 from pathlib import Path
 
@@ -53,8 +52,7 @@ class StrikeActorCritic(nn.Module):
             mask[empty, 0] = True
         return mask
 
-    def distributions(self, obs, locked_target=None, action_mask=None):
-        logits = self.actor_logits(obs)
+    def action_mask(self, obs, locked_target=None):
         mask = self.valid_target_mask(obs)
         if locked_target is not None:
             locked_target = torch.as_tensor(locked_target, device=obs.device, dtype=torch.long)
@@ -62,6 +60,11 @@ class StrikeActorCritic(nn.Module):
             lock_valid = (locked_target >= 0) & mask.gather(-1, safe_target.unsqueeze(-1)).squeeze(-1)
             forced = torch.nn.functional.one_hot(safe_target, self.n_targets).bool()
             mask = torch.where(lock_valid.unsqueeze(-1), forced, mask)
+        return mask
+
+    def distributions(self, obs, locked_target=None, action_mask=None):
+        logits = self.actor_logits(obs)
+        mask = self.action_mask(obs, locked_target)
         if action_mask is not None:
             action_mask = torch.as_tensor(action_mask, device=obs.device, dtype=torch.bool)
             mask = mask & action_mask
@@ -74,69 +77,11 @@ class StrikeActorCritic(nn.Module):
         return self.value_head(h).squeeze(-1)
 
     def act(self, obs, deterministic=False, locked_target=None):
-        logits = self.actor_logits(obs)
-        base_mask = self.valid_target_mask(obs)
-        active = obs.abs().sum(dim=-1) > 0
-        remaining_value = torch.stack([
-            obs[:, SELF_FEATURES + j * TARGET_FEATURES + 2]
-            for j in range(self.n_targets)], dim=-1).max(dim=0).values
-        capacity = torch.where(remaining_value > .5, 2, 1)
-        capacity = torch.where(remaining_value > 0, capacity, 0).long()
-        if locked_target is None:
-            locked_target = torch.full((len(obs),), -1, device=obs.device, dtype=torch.long)
-        else:
-            locked_target = torch.as_tensor(
-                locked_target, device=obs.device, dtype=torch.long)
-
-        target = torch.zeros(len(obs), device=obs.device, dtype=torch.long)
-        logp = torch.zeros(len(obs), device=obs.device, dtype=obs.dtype)
-        action_mask = torch.zeros_like(base_mask)
-        safe_locked = locked_target.clamp(min=0)
-        locked = (active & (locked_target >= 0)
-                  & base_mask.gather(-1, safe_locked.unsqueeze(-1)).squeeze(-1))
-        for index in torch.nonzero(locked, as_tuple=False).flatten().tolist():
-            chosen = int(locked_target[index])
-            if base_mask[index, chosen]:
-                target[index] = chosen
-                action_mask[index, chosen] = True
-                capacity[chosen] = torch.clamp(capacity[chosen] - 1, min=0)
-
-        # Resolve simultaneous preferences in stable agent-ID order. This
-        # preserves the decentralized logits while preventing target-capacity
-        # overflow in the joint action actually sent to the environment.
-        free = torch.nonzero(active & ~locked, as_tuple=False).flatten().tolist()
-        # If useful life slots outnumber drones, exclude the lowest-value
-        # slots. The actor still optimizes assignment geometry among the
-        # score-maximal targets instead of spending an expendable drone on a
-        # dominated target.
-        per_life_value = torch.where(
-            remaining_value > .5, remaining_value / 2, remaining_value)
-        slot_values = torch.repeat_interleave(per_life_value, capacity)
-        if len(slot_values) > len(free) and free:
-            cutoff = slot_values.sort(descending=True).values[len(free) - 1]
-            priority_mask = per_life_value >= cutoff
-        else:
-            priority_mask = capacity > 0
-        for index in free:
-            available = base_mask[index] & (capacity > 0) & priority_mask
-            if not available.any():
-                available = base_mask[index] & (capacity > 0)
-            if not available.any():
-                available = base_mask[index]
-            conditional_logits = logits[index].masked_fill(~available, -1e9)
-            conditional_logp = torch.log_softmax(conditional_logits, dim=-1)
-            chosen = (conditional_logits.argmax(-1) if deterministic else
-                      torch.multinomial(conditional_logp.exp(), 1).squeeze(0))
-            target[index] = chosen
-            logp[index] = conditional_logp[chosen]
-            action_mask[index] = available
-            capacity[chosen] = torch.clamp(capacity[chosen] - 1, min=0)
-
-        inactive = torch.nonzero(~active, as_tuple=False).flatten()
-        if len(inactive):
-            action_mask[inactive, 0] = True
+        action_mask = self.action_mask(obs, locked_target)
+        dist = self.distributions(obs, locked_target=locked_target)
+        target = dist.probs.argmax(-1) if deterministic else dist.sample()
         return strike_action(target.cpu().numpy()), {
-            "logp": logp, "action_mask": action_mask}
+            "logp": dist.log_prob(target), "action_mask": action_mask}
 
     def evaluate_actions(self, obs, target, action_mask):
         dist = self.distributions(obs, action_mask=action_mask)
@@ -146,7 +91,7 @@ class StrikeActorCritic(nn.Module):
 def save_checkpoint(path, model, metadata):
     torch.save({"state_dict": model.state_dict(), "obs_dim": model.obs_dim,
                 "n_targets": model.n_targets, "n_agents": model.n_agents,
-                "architecture": "strike_mappo_v15",
+                "architecture": "strike_mappo_v16",
                 "metadata": metadata}, Path(path))
 
 
@@ -159,7 +104,7 @@ def load_checkpoint(path, model):
     else:
         torch.serialization.add_safe_globals([TorchVersion])
         payload = torch.load(Path(path), map_location="cpu", weights_only=True)
-    if payload.get("architecture") != "strike_mappo_v15":
+    if payload.get("architecture") != "strike_mappo_v16":
         raise ValueError("Checkpoint is not a strike MAPPO model; retrain it")
     if (payload["obs_dim"] != model.obs_dim or payload["n_targets"] != model.n_targets
             or payload["n_agents"] != model.n_agents):

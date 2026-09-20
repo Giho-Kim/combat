@@ -58,7 +58,7 @@ def train(args):
     metadata=dict(seed=args.seed,requested_agent_transitions=args.steps,actual_agent_transitions=actual,
                   eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
                   config=asdict(c),python=platform.python_version(),numpy=str(np.__version__),torch=str(torch.__version__),
-                  algorithm='CTDE Strike MAPPO: local actor logits + capacity-aware joint resolver + centralized critic')
+                  algorithm='CTDE Strike MAPPO: independent local actor + environment strike resolver + centralized critic')
     save_checkpoint(out/'strike_mappo.pt',model,metadata);write_csv(out/'training_episodes.csv',episodes)
     save_checkpoint(out/'latest.pt',model,metadata)
     if not evaluations:
