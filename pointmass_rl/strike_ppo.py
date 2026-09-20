@@ -271,14 +271,14 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
     model = StrikeActorCritic(world.obs_dim, config.n_targets, config.n_agents)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     completed, episode_rows, evaluation_rows = 0, [], []
-    best_key = (-float("inf"), -float("inf"))
+    best_return = -float("inf")
     next_eval = eval_interval if eval_interval > 0 else None
     next_checkpoint = checkpoint_interval if checkpoint_dir is not None else None
     progress_bar = tqdm(total=total_agent_transitions, desc="Train", unit="transition",
                         dynamic_ncols=True, disable=not progress)
 
     def run_evaluation(agent_transitions):
-        nonlocal best_key
+        nonlocal best_return
         if latest_path is not None:
             save_checkpoint(latest_path, model, {"agent_transitions": agent_transitions,
                                                  "seed": seed})
@@ -288,22 +288,18 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
             "heuristic": evaluate_baseline(HeuristicPolicy, config, eval_episodes, eval_seed),
             "mappo": evaluate_model(model, config, eval_episodes, eval_seed),
         }
-        mappo_success = evaluations["mappo"]["mission_success"]
         mappo_return = evaluations["mappo"]["team_return"]
-        candidate_key = (mappo_success, mappo_return)
-        if best_path is not None and candidate_key > best_key:
-            best_key = candidate_key
+        if best_path is not None and mappo_return > best_return:
+            best_return = mappo_return
             save_checkpoint(best_path, model, {
-                "best_metric": "mean_success_then_interquartile_mean_team_return",
-                "best_success": mappo_success,
-                "best_value": mappo_return,
+                "best_metric": "interquartile_mean_team_return",
+                "best_value": best_return,
                 "agent_transitions": agent_transitions,
                 "eval_episodes": eval_episodes,
                 "eval_seed": eval_seed,
             })
             progress_bar.write(
-                f"Saved best checkpoint: {best_path} "
-                f"(success={mappo_success:.3f}, iqm_return={mappo_return:.3f})")
+                f"Saved best checkpoint: {best_path} (iqm_return={best_return:.3f})")
         for policy_name, evaluation in evaluations.items():
             evaluation_rows.append(dict(agent_transitions=agent_transitions,
                                         policy=policy_name, episodes=eval_episodes,

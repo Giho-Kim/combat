@@ -42,7 +42,7 @@ horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_f
 
 학습 중에는 `--eval-interval` agent transition마다 `--eval-seed`부터 시작하는 동일한 고정 평가 시나리오에서 random, heuristic, deterministic MAPPO를 모두 실행합니다. 성공률은 전체 평가 에피소드의 raw mean으로, 나머지 지표는 중앙 50% IQM으로 출력하고 `training_evaluations.csv`에 기록합니다. `--eval-interval 0`으로 중간 평가를 끌 수 있습니다.
 
-`best.pt`는 raw 성공률을 우선하고, 성공률이 같으면 IQM team return이 높은 모델로 갱신합니다. 학습 종료 시점 모델은 별도로 `strike_mappo.pt`에 저장됩니다.
+`best.pt`는 MAPPO의 IQM team return이 갱신될 때 저장합니다. 학습 종료 시점 모델은 별도로 `strike_mappo.pt`에 저장됩니다.
 
 `latest.pt`는 최고 성능 갱신 여부와 관계없이 매 평가 시점과 학습 종료 시 저장합니다. `--eval-interval 0`이면 종료 시에만 저장합니다. 모델 가중치 체크포인트이며 optimizer를 포함한 학습 재개 파일은 아닙니다.
 
