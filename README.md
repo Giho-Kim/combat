@@ -34,11 +34,11 @@ python -m pointmass_rl evaluate --config configs/default.json --model runs/train
 
 `B`는 편제 1의 초기 타입·life 가치 합이고, `D`는 편제 1·2 전체에서 지금까지 감소시킨 타입별 life 가치의 누적합입니다. 타입 1 life는 2.5, 타입 2는 2, 타입 3은 1의 가치를 가집니다. 매 step 팀 보상은 `-penalty_time × (B-D)/B`이며 `max`로 자르지 않습니다. `D=B`이면 시간 보상이 0이고 임무 성공이며, `D>B`이면 이후 보상이 양수가 됩니다. 아군이 전멸해도 보상을 미리 당겨 지급하거나 조기 종료하지 않고 고정 horizon까지 진행합니다.
 
-horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_failure_penalty`를 추가합니다. 기본값은 `-100`입니다.
+`D`가 처음 `B`에 도달하거나 넘는 step에는 일회성 팀 성공 보상 `+mission_success_reward`를 추가합니다. 기본값은 `+100`입니다. horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_failure_penalty`를 추가합니다. 기본값은 `-100`입니다.
 
 학습 알고리즘은 CTDE Strike MAPPO입니다. 공유 actor는 각 드론의 local observation에서 독립적으로 표적별 logit을 출력하고 local action mask 안에서 target을 선택합니다. 같은 표적을 동시에 고른 경우에도 environment가 strike range, 거리, 타입별 참여 상한으로 실제 participant를 결정합니다. PPO에는 실제 선택 때 사용한 local mask와 log-probability를 저장하므로 update도 같은 분포를 사용합니다. centralized critic은 joint observation과 타격 진행도로 공통 baseline을 추정합니다. 소진 전 선택에는 에피소드 종료까지의 팀 보상을 반영하며, 소진 이후 슬롯은 PPO loss에서 제외합니다.
 
-환경·평가·PPO는 하나의 reward를 사용합니다. 각 드론 reward는 팀 보상 분배분에 드론별 damage credit `damage_credit_scale × (해당 드론이 감소시킨 가치 / B)`를 더한 값입니다. 기본 scale은 50이며, 실제 피해를 만든 드론만 credit을 받으므로 같은 팀 보상을 공유하던 유효 배치와 잉여 배치를 구분할 수 있습니다. `team_return`은 이 통합 reward의 드론 합을 에피소드 동안 누적한 값입니다. `damage_credit_scale=0`이면 순수 팀 보상으로 돌아갑니다.
+환경·평가·PPO는 하나의 team reward를 사용합니다. team reward는 해당 step 시작 시 활성 드론에게 균등 분배되며, `team_return`은 그 합을 에피소드 동안 누적한 값입니다. 별도의 damage shaping은 사용하지 않습니다.
 
 학습 중에는 `--eval-interval` agent transition마다 `--eval-seed`부터 시작하는 동일한 고정 평가 시나리오에서 random, heuristic, deterministic MAPPO를 모두 실행합니다. 성공률은 전체 평가 에피소드의 raw mean으로, 나머지 지표는 중앙 50% IQM으로 출력하고 `training_evaluations.csv`에 기록합니다. `--eval-interval 0`으로 중간 평가를 끌 수 있습니다.
 

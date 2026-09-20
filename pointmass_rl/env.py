@@ -58,7 +58,7 @@ class Config:
     discount_gamma: float = 0.99
     gae_lambda: float = 0.95
     mission_failure_penalty: float = 100.0
-    damage_credit_scale: float = 50.0
+    mission_success_reward: float = 100.0
 
     def __post_init__(self):
         if not 1 <= self.n_agents <= 10:
@@ -88,7 +88,7 @@ class Config:
         if not 0 < self.formation_two_progress < 1:
             raise ValueError("formation_two_progress must be in (0, 1)")
         if min(self.position_noise, self.initial_intel_noise, self.penalty_time,
-               self.mission_failure_penalty, self.damage_credit_scale) < 0:
+               self.mission_failure_penalty, self.mission_success_reward) < 0:
             raise ValueError("noise, drain and penalties must be nonnegative")
         if not 0 < self.discount_gamma <= 1:
             raise ValueError("discount_gamma must be in (0, 1]")
@@ -284,7 +284,6 @@ class World:
         # heading to the same target, but do not disappear with that strike.
         self.strike_participants = np.zeros((c.n_targets, self.n), dtype=bool)
         self.last_agent_terminated = np.zeros(self.n, dtype=bool)
-        self.last_damage_by_agent = np.zeros(self.n, dtype=float)
         self.initial_score = int(self.target_score[self.target_exists].sum())
         formation_one = self.target_exists & (self.target_formation == 0)
         self.formation_one_initial_score = int(self.target_score[formation_one].sum())
@@ -419,7 +418,6 @@ class World:
             initial_life = 2 if self.target_type[j] == 1 else 1
             damage_value = self.target_score[j] * damage / initial_life
             self.score += damage_value
-            self.last_damage_by_agent[participants] += damage_value / participants.sum()
             if self.target_life[j] <= 0:
                 self.destroyed[j] = True
                 self.active[j] = False
@@ -435,7 +433,6 @@ class World:
         targets = self.committed_targets(proposed_targets)
         c = self.c
         reward = np.zeros(self.n, dtype=float)
-        self.last_damage_by_agent.fill(0.0)
         step_active = self.agent_active.copy()
         agent_count = int(step_active.sum())
         old_pos = self.pos.copy()
@@ -452,6 +449,7 @@ class World:
                 self.heading[i] = np.arctan2(moved[1], moved[0])
         self.vel = (self.pos - old_pos) / c.dt
         self.t += 1
+        score_before = self.score
         # Resolve an approach completed during this decision interval before
         # advancing the target to the next interval.
         self._resolve_strikes(targets)
@@ -460,6 +458,8 @@ class World:
         margin = ((self.formation_one_initial_score - self.score)
                   / max(1, self.formation_one_initial_score))
         team_step_reward = -c.penalty_time * margin
+        if score_before < self.formation_one_initial_score <= self.score:
+            team_step_reward += c.mission_success_reward
         failure_end = (self.t >= c.horizon
                        and self.score < self.formation_one_initial_score)
         if failure_end:
@@ -470,8 +470,6 @@ class World:
             # Keep fixed-horizon team rewards observable after every drone has
             # been expended by distributing them over the fixed agent slots.
             reward += team_step_reward / self.n
-        reward += (c.damage_credit_scale * self.last_damage_by_agent
-                   / max(1, self.formation_one_initial_score))
         self.vel[~self.agent_active] = 0
         self.last_agent_terminated = step_active & ~self.agent_active
         if self.score > 0 and self.first_score_step is None:

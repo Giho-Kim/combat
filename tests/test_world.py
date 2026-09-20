@@ -9,7 +9,7 @@ from pointmass_rl.policies import HeuristicPolicy
 def compact(**kwargs):
     values = dict(n_agents=3, min_agents=3, n_targets=2, min_targets=2,
                   randomize_counts=False, horizon=20,
-                  mission_failure_penalty=0, damage_credit_scale=0)
+                  mission_failure_penalty=0, mission_success_reward=0)
     values.update(kwargs)
     return Config(**values)
 
@@ -79,6 +79,7 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(c.horizon, 200)
         self.assertEqual(c.penalty_time, 0.1)
         self.assertEqual(c.mission_failure_penalty, 100.0)
+        self.assertEqual(c.mission_success_reward, 100.0)
         self.assertFalse(c.randomize_counts)
         w = World(c)
         w.reset(16)
@@ -191,7 +192,6 @@ class WorldTests(unittest.TestCase):
         self.assertEqual(w.target_life[0], 0)
         self.assertFalse(terminated)
         np.testing.assert_array_equal(w.agent_active, [False, False, True, True])
-        np.testing.assert_allclose(w.last_damage_by_agent, [2.5, 2.5, 0, 0])
         self.assertTrue(np.all(w.observation[1] == 0))
 
         metrics = w.metrics()
@@ -216,12 +216,10 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(terminated)
         self.assertEqual(w.target_life[0], 1)
         self.assertAlmostEqual(float(reward.sum()), 0.0)
-        np.testing.assert_allclose(w.last_damage_by_agent, [2.5, 0])
         np.testing.assert_array_equal(w.agent_active, [False, True])
         w.pos[1] = w.targets[0]
         w._sense()
         w.step(action(w))
-        np.testing.assert_allclose(w.last_damage_by_agent, [0, 0])
         _, reward, terminated, _, _ = w.step(action(w))
         self.assertFalse(terminated)
         self.assertEqual(w.target_life[0], 0)
@@ -259,11 +257,11 @@ class WorldTests(unittest.TestCase):
         self.assertTrue(truncated)
         self.assertAlmostEqual(float(reward.sum()), -10.1, places=6)
 
-    def test_damage_credit_is_part_of_environment_reward(self):
+    def test_success_reward_is_paid_once_when_crossing_threshold(self):
         w = World(compact(n_agents=1, min_agents=1, n_targets=1, min_targets=1,
                           strike_probability=1, strike_range=1,
                           strike_steps_per_life=1, penalty_time=0,
-                          damage_credit_scale=50))
+                          mission_success_reward=50))
         w.reset(35)
         w.target_type[0], w.target_life[0], w.target_score[0] = 2, 1, 2
         w.mem_type[:, 0], w.mem_life[:, 0] = 2, 1
@@ -272,6 +270,8 @@ class WorldTests(unittest.TestCase):
         w._sense()
         _, reward, _, _, _ = w.step(action(w))
         self.assertAlmostEqual(float(reward.sum()), 50.0)
+        _, reward, _, _, _ = w.step(action(w))
+        self.assertAlmostEqual(float(reward.sum()), 0.0)
 
     def test_type_two_strike_participation_is_capped_at_one(self):
         w = World(compact(n_targets=1, min_targets=1,

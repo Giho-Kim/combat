@@ -26,9 +26,9 @@ class StrikePolicyTests(unittest.TestCase):
             self.assertTrue((scaled.sign() == advantage.sign()).all())
             self.assertTrue((scaled.abs() > 0).all())
 
-    def test_damage_credit_scale_must_be_nonnegative(self):
+    def test_reward_scales_must_be_nonnegative(self):
         with self.assertRaises(ValueError):
-            Config(damage_credit_scale=-1)
+            Config(mission_success_reward=-1)
         with self.assertRaises(ValueError):
             Config(gae_lambda=0)
 

@@ -28,5 +28,5 @@
   "discount_gamma": 0.99,
   "gae_lambda": 0.95,
   "mission_failure_penalty": 100.0,
-  "damage_credit_scale": 50.0
+  "mission_success_reward": 100.0
 }
