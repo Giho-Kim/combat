@@ -115,7 +115,8 @@ class StrikePolicyTests(unittest.TestCase):
         self.assertIsInstance(model, StrikeActorCritic)
         self.assertGreaterEqual(completed, 36)
         self.assertTrue(episodes)
-        self.assertEqual(len(evaluations), 6)
+        self.assertEqual(len(evaluations), 9)
+        self.assertEqual({row["agent_transitions"] for row in evaluations}, {0, 18, 36})
         self.assertEqual({row["policy"] for row in evaluations},
                          {"random", "heuristic", "mappo"})
         self.assertIn("score_auc", evaluations[0])

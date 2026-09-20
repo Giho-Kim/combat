@@ -277,6 +277,48 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
     progress_bar = tqdm(total=total_agent_transitions, desc="Train", unit="transition",
                         dynamic_ncols=True, disable=not progress)
 
+    def run_evaluation(agent_transitions):
+        nonlocal best_key
+        if latest_path is not None:
+            save_checkpoint(latest_path, model, {"agent_transitions": agent_transitions,
+                                                 "seed": seed})
+        from .policies import HeuristicPolicy, RandomPolicy
+        evaluations = {
+            "random": evaluate_baseline(RandomPolicy, config, eval_episodes, eval_seed),
+            "heuristic": evaluate_baseline(HeuristicPolicy, config, eval_episodes, eval_seed),
+            "mappo": evaluate_model(model, config, eval_episodes, eval_seed),
+        }
+        mappo_success = evaluations["mappo"]["mission_success"]
+        mappo_return = evaluations["mappo"]["team_return"]
+        candidate_key = (mappo_success, mappo_return)
+        if best_path is not None and candidate_key > best_key:
+            best_key = candidate_key
+            save_checkpoint(best_path, model, {
+                "best_metric": "mean_success_then_interquartile_mean_team_return",
+                "best_success": mappo_success,
+                "best_value": mappo_return,
+                "agent_transitions": agent_transitions,
+                "eval_episodes": eval_episodes,
+                "eval_seed": eval_seed,
+            })
+            progress_bar.write(
+                f"Saved best checkpoint: {best_path} "
+                f"(success={mappo_success:.3f}, iqm_return={mappo_return:.3f})")
+        for policy_name, evaluation in evaluations.items():
+            evaluation_rows.append(dict(agent_transitions=agent_transitions,
+                                        policy=policy_name, episodes=eval_episodes,
+                                        seed=eval_seed, **evaluation))
+            score_ratio = evaluation["score"] / max(1.0, evaluation["baseline_score"])
+            progress_bar.write(
+                f"Eval @ {agent_transitions:,} [{policy_name}]: "
+                f"iqm_return={evaluation['team_return']:.3f} "
+                f"success={evaluation['mission_success']:.3f} "
+                f"score={score_ratio:.3f} destroyed={evaluation['destroyed_fraction']:.3f} "
+                f"auc={evaluation['score_auc']:.3f} steps={evaluation['steps']:.1f}")
+
+    if next_eval is not None:
+        run_evaluation(0)
+
     while completed < total_agent_transitions:
         steps = min(rollout_steps, max(1, int(np.ceil(
             (total_agent_transitions - completed) / config.n_agents))))
@@ -343,41 +385,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
             progress_bar.write(f"Saved periodic checkpoint: {checkpoint_path}")
             next_checkpoint += checkpoint_interval
         if next_eval is not None and completed >= next_eval:
-            if latest_path is not None:
-                save_checkpoint(latest_path, model, {"agent_transitions": completed,
-                                                     "seed": seed})
-            from .policies import HeuristicPolicy, RandomPolicy
-            evaluations = {
-                "random": evaluate_baseline(RandomPolicy, config, eval_episodes, eval_seed),
-                "heuristic": evaluate_baseline(HeuristicPolicy, config, eval_episodes, eval_seed),
-                "mappo": evaluate_model(model, config, eval_episodes, eval_seed),
-            }
-            mappo_success = evaluations["mappo"]["mission_success"]
-            mappo_return = evaluations["mappo"]["team_return"]
-            candidate_key = (mappo_success, mappo_return)
-            if best_path is not None and candidate_key > best_key:
-                best_key = candidate_key
-                save_checkpoint(best_path, model, {
-                    "best_metric": "mean_success_then_interquartile_mean_team_return",
-                    "best_success": mappo_success,
-                    "best_value": mappo_return,
-                    "agent_transitions": completed,
-                    "eval_episodes": eval_episodes,
-                    "eval_seed": eval_seed,
-                })
-                progress_bar.write(
-                    f"Saved best checkpoint: {best_path} "
-                    f"(success={mappo_success:.3f}, iqm_return={mappo_return:.3f})")
-            for policy_name, evaluation in evaluations.items():
-                evaluation_rows.append(dict(agent_transitions=completed, policy=policy_name,
-                                            episodes=eval_episodes, seed=eval_seed, **evaluation))
-                score_ratio = evaluation["score"] / max(1.0, evaluation["baseline_score"])
-                progress_bar.write(
-                    f"Eval @ {completed:,} [{policy_name}]: "
-                    f"iqm_return={evaluation['team_return']:.3f} "
-                    f"success={evaluation['mission_success']:.3f} "
-                    f"score={score_ratio:.3f} destroyed={evaluation['destroyed_fraction']:.3f} "
-                    f"auc={evaluation['score_auc']:.3f} steps={evaluation['steps']:.1f}")
+            run_evaluation(completed)
             while next_eval <= completed:
                 next_eval += eval_interval
         if episode_rows:
