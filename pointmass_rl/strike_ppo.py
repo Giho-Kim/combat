@@ -122,7 +122,7 @@ def critic_state(world, obs):
     return np.repeat(state[None], world.c.n_agents, axis=0)
 
 
-def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=1.0):
+def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.95):
     advantage = np.zeros_like(reward)
     carry = np.zeros(reward.shape[1], dtype=np.float32)
     for t in reversed(range(len(reward))):

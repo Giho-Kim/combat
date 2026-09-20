@@ -35,7 +35,7 @@ horizon 도달 시 `D<B`이면 기본 `-100`의 임무 실패 패널티를 추�
 
 타격 참여 상한은 `min(타입별 상한, 남은 life)`입니다. 타입 1에 1대가 먼저 성공한 뒤 나머지 기체들이 도착하더라도 life 1을 제거하는 데에는 1대만 참여합니다. 따라서 명중률 100%에서 타입 1 하나에 총 2대를 초과해 소모하지 않습니다.
 
-CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation만 받아 생존하며 알려진 표적의 logit을 계산하고 local action mask에서 독립적으로 target을 선택합니다. 같은 표적을 동시에 고른 경우에는 environment가 strike range, 거리, 남은 life와 타입별 참여 상한으로 실제 participant를 결정합니다. rollout에는 각 선택의 local mask와 log-probability를 저장합니다. centralized critic은 joint observation과 타격 진행도에서 공통 baseline을 계산합니다. 이렇게 드론별 damage credit 차이가 actor advantage에 남습니다. 할인율 `gamma=0.99`, `GAE lambda=1.0`으로 advantage를 계산한 뒤 clipped PPO objective, centralized value loss, entropy bonus를 함께 최적화합니다.
+CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation만 받아 생존하며 알려진 표적의 logit을 계산하고 local action mask에서 독립적으로 target을 선택합니다. 같은 표적을 동시에 고른 경우에는 environment가 strike range, 거리, 남은 life와 타입별 참여 상한으로 실제 participant를 결정합니다. rollout에는 각 선택의 local mask와 log-probability를 저장합니다. centralized critic은 joint observation과 타격 진행도에서 공통 baseline을 계산합니다. 이렇게 드론별 damage credit 차이가 actor advantage에 남습니다. 할인율 `gamma=0.99`, `GAE lambda=0.95`로 advantage를 계산한 뒤 clipped PPO objective, centralized value loss, entropy bonus를 함께 최적화합니다.
 
 환경 보상과 평가용 `team_return`은 MDP 절의 공식을 유지합니다. PPO rollout에서 각 드론의 학습 보상은 공통 team reward에 `damage_credit_scale × local_damage / B`를 더한 값입니다. `local_damage`는 그 step에 해당 드론이 실제로 감소시킨 타입별 life 가치이며 기본 scale은 50입니다. 따라서 임무 성공·실패 결과는 모든 과거 선택에 계속 전달되지만, 실제 피해를 만든 배치는 추가로 직접 credit을 받습니다. 이 항은 learner 내부에서만 사용하므로 환경 return, 성공 판정, 관측을 바꾸지 않으며 scale 0으로 비활성화할 수 있습니다.
 

@@ -56,7 +56,7 @@ class Config:
     strike_steps_per_life: int = 10
     penalty_time: float = 0.1
     discount_gamma: float = 0.99
-    gae_lambda: float = 1.0
+    gae_lambda: float = 0.95
     mission_failure_penalty: float = 100.0
     damage_credit_scale: float = 50.0
 

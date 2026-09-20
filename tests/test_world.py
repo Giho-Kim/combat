@@ -75,7 +75,7 @@ class WorldTests(unittest.TestCase):
     def test_default_time_limit_penalty_and_start_distance(self):
         c = Config()
         self.assertEqual(c.n_agents, 6)
-        self.assertEqual(c.gae_lambda, 1.0)
+        self.assertEqual(c.gae_lambda, .95)
         self.assertEqual(c.horizon, 200)
         self.assertEqual(c.penalty_time, 0.1)
         self.assertEqual(c.mission_failure_penalty, 100.0)
