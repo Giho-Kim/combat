@@ -47,7 +47,7 @@ class StrikePolicyTests(unittest.TestCase):
         obs = w.reset(8)
         model = StrikeActorCritic(w.obs_dim, w.c.n_targets, w.n)
         state = torch.as_tensor(critic_state(w, obs))
-        values = model.values(state, torch.arange(w.n))
+        values = model.values(state)
         torch.testing.assert_close(values, values[0].expand_as(values))
         # Drone 0 disappeared after step 0; a later team penalty must still
         # affect the return of its earlier decision.
@@ -68,9 +68,8 @@ class StrikePolicyTests(unittest.TestCase):
         self.assertTrue(np.all((target >= 0) & (target < c.n_targets)))
         for value in stats.values():
             self.assertTrue(torch.isfinite(value).all())
-        ids = torch.arange(c.n_agents)
         replay_logp, _ = model.evaluate_actions(
-            obs, ids, torch.as_tensor(target), stats["action_mask"])
+            obs, torch.as_tensor(target), stats["action_mask"])
         torch.testing.assert_close(replay_logp, stats["logp"])
         capacity = np.minimum(np.where(w.target_type == 1, 2, 1), w.target_life)
         counts = np.bincount(target[np.any(obs.numpy() != 0, axis=1)],
@@ -90,22 +89,21 @@ class StrikePolicyTests(unittest.TestCase):
         obs = torch.as_tensor(w.reset(3), dtype=torch.float32)
         model = StrikeActorCritic(w.obs_dim, c.n_targets, c.n_agents)
         state = torch.as_tensor(critic_state(w, obs.numpy()))
-        ids = torch.arange(c.n_agents)
-        original = model.values(state, ids)
+        original = model.values(state)
         changed_obs = obs.clone()
         changed_obs[1, 0] += .5
         changed_state = torch.as_tensor(critic_state(w, changed_obs.numpy()))
-        changed = model.values(changed_state, ids)
+        changed = model.values(changed_state)
         self.assertFalse(torch.allclose(original, changed))
-        actor_before = model.distributions(obs, ids).probs[0]
-        actor_after = model.distributions(changed_obs, ids).probs[0]
+        actor_before = model.distributions(obs).probs[0]
+        actor_after = model.distributions(changed_obs).probs[0]
         torch.testing.assert_close(actor_before, actor_after)
 
         w.strike_progress[0] = 9
         progress_state = torch.as_tensor(critic_state(w, obs.numpy()))
         self.assertAlmostEqual(float(progress_state[0, -(c.n_targets + 1)]), .9, places=6)
-        self.assertFalse(torch.allclose(original, model.values(progress_state, ids)))
-        torch.testing.assert_close(actor_before, model.distributions(obs, ids).probs[0])
+        self.assertFalse(torch.allclose(original, model.values(progress_state)))
+        torch.testing.assert_close(actor_before, model.distributions(obs).probs[0])
 
         w.score = w.formation_one_initial_score / 2
         margin_state = torch.as_tensor(critic_state(w, obs.numpy()))

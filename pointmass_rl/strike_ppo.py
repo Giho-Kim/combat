@@ -27,10 +27,10 @@ class StrikeActorCritic(nn.Module):
         self.n_targets = n_targets
         self.n_agents = n_agents
         self.state_dim = obs_dim * n_agents + n_targets + 1
-        self.actor_body = nn.Sequential(nn.Linear(obs_dim + n_agents, hidden), nn.Tanh(),
+        self.actor_body = nn.Sequential(nn.Linear(obs_dim, hidden), nn.Tanh(),
                                         nn.Linear(hidden, hidden), nn.Tanh())
         self.target_head = nn.Linear(hidden, n_targets)
-        self.critic_body = nn.Sequential(nn.Linear(self.state_dim + n_agents, hidden), nn.Tanh(),
+        self.critic_body = nn.Sequential(nn.Linear(self.state_dim, hidden), nn.Tanh(),
                                          nn.Linear(hidden, hidden), nn.Tanh())
         self.value_head = nn.Linear(hidden, 1)
 
@@ -39,11 +39,8 @@ class StrikeActorCritic(nn.Module):
         selectable = SELF_FEATURES + ids * TARGET_FEATURES + 3
         return obs[..., selectable] > 0
 
-    def actor_logits(self, obs, agent_id=None):
-        if agent_id is None:
-            agent_id = torch.arange(len(obs), device=obs.device)
-        identity = torch.nn.functional.one_hot(agent_id.long(), self.n_agents).to(obs.dtype)
-        h = self.actor_body(torch.cat([obs, identity], dim=-1))
+    def actor_logits(self, obs):
+        h = self.actor_body(obs)
         return self.target_head(h)
 
     def valid_target_mask(self, obs):
@@ -56,8 +53,8 @@ class StrikeActorCritic(nn.Module):
             mask[empty, 0] = True
         return mask
 
-    def distributions(self, obs, agent_id=None, locked_target=None, action_mask=None):
-        logits = self.actor_logits(obs, agent_id)
+    def distributions(self, obs, locked_target=None, action_mask=None):
+        logits = self.actor_logits(obs)
         mask = self.valid_target_mask(obs)
         if locked_target is not None:
             locked_target = torch.as_tensor(locked_target, device=obs.device, dtype=torch.long)
@@ -70,17 +67,14 @@ class StrikeActorCritic(nn.Module):
             mask = mask & action_mask
         return Categorical(logits=logits.masked_fill(~mask, -1e9))
 
-    def values(self, state, agent_id):
+    def values(self, state):
         # Keep one common baseline so local damage-credit differences remain
         # in the actor advantage instead of being explained away by identity.
-        identity = state.new_zeros((*state.shape[:-1], self.n_agents))
-        h = self.critic_body(torch.cat([state, identity], dim=-1))
+        h = self.critic_body(state)
         return self.value_head(h).squeeze(-1)
 
-    def act(self, obs, deterministic=False, locked_target=None, agent_id=None):
-        if agent_id is None:
-            agent_id = torch.arange(len(obs), device=obs.device)
-        logits = self.actor_logits(obs, agent_id)
+    def act(self, obs, deterministic=False, locked_target=None):
+        logits = self.actor_logits(obs)
         base_mask = self.valid_target_mask(obs)
         active = obs.abs().sum(dim=-1) > 0
         remaining_value = torch.stack([
@@ -111,7 +105,6 @@ class StrikeActorCritic(nn.Module):
         # preserves the decentralized logits while preventing target-capacity
         # overflow in the joint action actually sent to the environment.
         free = torch.nonzero(active & ~locked, as_tuple=False).flatten().tolist()
-        free.sort(key=lambda index: int(agent_id[index]))
         # If useful life slots outnumber drones, exclude the lowest-value
         # slots. The actor still optimizes assignment geometry among the
         # score-maximal targets instead of spending an expendable drone on a
@@ -145,15 +138,15 @@ class StrikeActorCritic(nn.Module):
         return strike_action(target.cpu().numpy()), {
             "logp": logp, "action_mask": action_mask}
 
-    def evaluate_actions(self, obs, agent_id, target, action_mask):
-        dist = self.distributions(obs, agent_id, action_mask=action_mask)
+    def evaluate_actions(self, obs, target, action_mask):
+        dist = self.distributions(obs, action_mask=action_mask)
         return dist.log_prob(target), dist.entropy()
 
 
 def save_checkpoint(path, model, metadata):
     torch.save({"state_dict": model.state_dict(), "obs_dim": model.obs_dim,
                 "n_targets": model.n_targets, "n_agents": model.n_agents,
-                "architecture": "strike_mappo_v14",
+                "architecture": "strike_mappo_v15",
                 "metadata": metadata}, Path(path))
 
 
@@ -166,7 +159,7 @@ def load_checkpoint(path, model):
     else:
         torch.serialization.add_safe_globals([TorchVersion])
         payload = torch.load(Path(path), map_location="cpu", weights_only=True)
-    if payload.get("architecture") != "strike_mappo_v14":
+    if payload.get("architecture") != "strike_mappo_v15":
         raise ValueError("Checkpoint is not a strike MAPPO model; retrain it")
     if (payload["obs_dim"] != model.obs_dim or payload["n_targets"] != model.n_targets
             or payload["n_agents"] != model.n_agents):
@@ -202,13 +195,12 @@ def _learning_rewards(team_reward, damage_by_agent, baseline_score, damage_credi
     return reward
 
 
-def _batch(obs, state, agent_id, target, action_mask, logp, advantage, returns,
+def _batch(obs, state, target, action_mask, logp, advantage, returns,
            active, decision):
     mask = np.asarray(active, dtype=bool).reshape(-1)
     obs_array = np.asarray(obs)
     return (torch.as_tensor(obs_array.reshape(-1, obs_array.shape[-1])[mask], dtype=torch.float32),
             torch.as_tensor(np.asarray(state).reshape(-1, np.asarray(state).shape[-1])[mask], dtype=torch.float32),
-            torch.as_tensor(np.asarray(agent_id).reshape(-1)[mask], dtype=torch.long),
             torch.as_tensor(np.asarray(target).reshape(-1)[mask], dtype=torch.long),
             torch.as_tensor(np.asarray(action_mask).reshape(
                 -1, np.asarray(action_mask).shape[-1])[mask], dtype=torch.bool),
@@ -228,15 +220,14 @@ def _scale_actor_advantage(advantage, decision):
 
 
 def _ppo_update(model, optimizer, tensors, epochs, minibatch_size):
-    obs, state, agent_id, target, action_mask, old_logp, advantage, returns, decision = tensors
+    obs, state, target, action_mask, old_logp, advantage, returns, decision = tensors
     advantage = _scale_actor_advantage(advantage, decision)
     for _ in range(epochs):
         order = torch.randperm(len(obs))
         for start in range(0, len(obs), minibatch_size):
             idx = order[start:start + minibatch_size]
-            logp, entropy = model.evaluate_actions(
-                obs[idx], agent_id[idx], target[idx], action_mask[idx])
-            value = model.values(state[idx], agent_id[idx])
+            logp, entropy = model.evaluate_actions(obs[idx], target[idx], action_mask[idx])
+            value = model.values(state[idx])
             ratio = (logp - old_logp[idx]).exp()
             clipped = ratio.clamp(.8, 1.2)
             choose = decision[idx]
@@ -344,7 +335,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
     while completed < total_agent_transitions:
         steps = min(rollout_steps, max(1, int(np.ceil(
             (total_agent_transitions - completed) / config.n_agents))))
-        observations, states, agent_ids, targets, action_masks, logps, values = ([] for _ in range(7))
+        observations, states, targets, action_masks, logps, values = ([] for _ in range(6))
         next_values, rewards, dones, active, decisions = [], [], [], [], []
         for _ in range(steps):
             locked_target = world.locked_targets()
@@ -354,21 +345,19 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
                           & mask[np.arange(config.n_agents), np.maximum(locked_target, 0)])
             locked_target[~lock_valid] = -1
             lock_before_action = locked_target.copy()
-            ids_t = torch.arange(config.n_agents)
             state = critic_state(world, obs)
             with torch.no_grad():
-                action, stats = model.act(obs_t, locked_target=locked_target, agent_id=ids_t)
-                value = model.values(torch.as_tensor(state, dtype=torch.float32), ids_t)
+                action, stats = model.act(obs_t, locked_target=locked_target)
+                value = model.values(torch.as_tensor(state, dtype=torch.float32))
             locked_target = action["target"].copy()
             active_before = world.agent_active.copy()
             next_obs, reward, terminated, truncated, metrics = world.step(action)
             env_done = terminated or truncated
             with torch.no_grad():
                 next_state = critic_state(world, next_obs)
-                next_value = model.values(torch.as_tensor(next_state, dtype=torch.float32), ids_t)
+                next_value = model.values(torch.as_tensor(next_state, dtype=torch.float32))
             observations.append(obs.copy())
             states.append(state)
-            agent_ids.append(np.arange(config.n_agents))
             targets.append(action["target"].copy())
             action_masks.append(stats["action_mask"].numpy())
             logps.append(stats["logp"].numpy())
@@ -395,7 +384,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=256, epoc
                                          np.asarray(next_values), np.asarray(dones),
                                          gamma=config.discount_gamma,
                                          gae_lambda=config.gae_lambda)
-        tensors = _batch(observations, states, agent_ids, targets, action_masks, logps,
+        tensors = _batch(observations, states, targets, action_masks, logps,
                          advantage, returns, active, decisions)
         _ppo_update(model, optimizer, tensors, epochs, minibatch_size)
         count = int(np.asarray(active).sum())

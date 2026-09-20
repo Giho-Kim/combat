@@ -35,7 +35,7 @@ horizon 도달 시 `D<B`이면 기본 `-100`의 임무 실패 패널티를 추�
 
 타격 참여 상한은 `min(타입별 상한, 남은 life)`입니다. 타입 1에 1대가 먼저 성공한 뒤 나머지 기체들이 도착하더라도 life 1을 제거하는 데에는 1대만 참여합니다. 따라서 명중률 100%에서 타입 1 하나에 총 2대를 초과해 소모하지 않습니다.
 
-CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation과 agent ID만 받아 생존하며 알려진 표적의 logit을 계산합니다. joint action resolver는 agent ID 순서로 conditional categorical을 만들고 남은 life/타입별 참여 상한을 소진하므로 한 step의 동시 선택도 capacity를 초과하지 않습니다. 유효 life slot 수가 드론보다 많으면 life당 가치가 낮은 slot을 action space에서 먼저 제외해 terminal score를 보존하고, actor는 같은 가치 집합 안에서 거리와 순서를 최적화합니다. rollout에는 각 선택의 conditional mask와 log-probability를 저장합니다. centralized critic은 joint observation과 타격 진행도에서 공통 baseline을 계산하며 ID 입력 슬롯은 0으로 고정합니다. 이렇게 드론별 damage credit 차이가 actor advantage에 남습니다. 할인율 `gamma=0.99`, `GAE lambda=1.0`으로 advantage를 계산한 뒤 clipped PPO objective, centralized value loss, entropy bonus를 함께 최적화합니다.
+CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation만 받아 생존하며 알려진 표적의 logit을 계산합니다. joint action resolver는 conditional categorical을 만들고 남은 life/타입별 참여 상한을 소진하므로 한 step의 동시 선택도 capacity를 초과하지 않습니다. 유효 life slot 수가 드론보다 많으면 life당 가치가 낮은 slot을 action space에서 먼저 제외해 terminal score를 보존하고, actor는 같은 가치 집합 안에서 거리와 순서를 최적화합니다. rollout에는 각 선택의 conditional mask와 log-probability를 저장합니다. centralized critic은 joint observation과 타격 진행도에서 공통 baseline을 계산합니다. 이렇게 드론별 damage credit 차이가 actor advantage에 남습니다. 할인율 `gamma=0.99`, `GAE lambda=1.0`으로 advantage를 계산한 뒤 clipped PPO objective, centralized value loss, entropy bonus를 함께 최적화합니다.
 
 환경 보상과 평가용 `team_return`은 MDP 절의 공식을 유지합니다. PPO rollout에서 각 드론의 학습 보상은 공통 team reward에 `damage_credit_scale × local_damage / B`를 더한 값입니다. `local_damage`는 그 step에 해당 드론이 실제로 감소시킨 타입별 life 가치이며 기본 scale은 50입니다. 따라서 임무 성공·실패 결과는 모든 과거 선택에 계속 전달되지만, 실제 피해를 만든 배치는 추가로 직접 credit을 받습니다. 이 항은 learner 내부에서만 사용하므로 환경 return, 성공 판정, 관측을 바꾸지 않으며 scale 0으로 비활성화할 수 있습니다.
 
@@ -45,7 +45,7 @@ CTDE Strike MAPPO를 사용합니다. 공유 actor는 local observation과 agent
 
 정기 평가는 학습 rollout과 다른 고정 seed에서 deterministic actor를 실행합니다. 평가 transition은 replay buffer와 optimizer에 들어가지 않습니다. 성공률은 tail failure가 잘리지 않도록 raw mean을 사용하고 다른 연속 지표는 IQM을 사용합니다. 체크포인트는 성공률을 먼저, 동률이면 IQM team return을 기준으로 선택합니다.
 
-별도 manager, Task option, 연속 공간 goal과 task-conditioned worker는 없습니다. 체크포인트에는 `strike_mappo_v14` architecture tag를 기록해 이전 joint-action 규칙의 모델이 잘못 로드되지 않게 합니다.
+별도 manager, Task option, 연속 공간 goal과 task-conditioned worker는 없습니다. 체크포인트에는 `strike_mappo_v15` architecture tag를 기록해 이전 joint-action 규칙의 모델이 잘못 로드되지 않게 합니다.
 
 기본 구성은 아군 6대이며 성공 기준은 전체 섬멸이 아니라 `D>=B`입니다. 편제 2에서 감소시킨 life 가치도 `D`에 포함되므로 어떤 편제를 공격하든 성공 진행도와 step 보상에 반영됩니다.
 

@@ -36,7 +36,7 @@ python -m pointmass_rl evaluate --config configs/default.json --model runs/train
 
 horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_failure_penalty`를 추가합니다. 기본값은 `-100`입니다.
 
-학습 알고리즘은 CTDE Strike MAPPO입니다. 공유 actor는 각 드론의 local observation과 agent ID만 사용해 표적별 logit을 출력합니다. capacity-aware resolver가 고정된 agent ID 순서로 이미 찬 표적을 마스킹해 타입 1에는 최대 2대, 타입 2·3에는 최대 1대만 배정합니다. 남은 유효 life slot이 드론보다 많으면 life당 가치가 낮은 slot부터 제외하므로 기본 구성에서는 타입 1 life 4개와 타입 2 life 2개에 6대를 배정해 최대 점수 14를 보존합니다. PPO에는 실제 선택 때 사용한 conditional mask와 log-probability를 저장하므로 update도 같은 분포를 사용합니다. centralized critic은 joint observation과 타격 진행도로 공통 baseline을 추정합니다. 소진 전 선택에는 에피소드 종료까지의 팀 보상을 반영하며, 소진 이후 슬롯은 PPO loss에서 제외합니다.
+학습 알고리즘은 CTDE Strike MAPPO입니다. 공유 actor는 각 드론의 local observation만 사용해 표적별 logit을 출력합니다. capacity-aware resolver가 이미 찬 표적을 마스킹해 타입 1에는 최대 2대, 타입 2·3에는 최대 1대만 배정합니다. 남은 유효 life slot이 드론보다 많으면 life당 가치가 낮은 slot부터 제외하므로 기본 구성에서는 타입 1 life 4개와 타입 2 life 2개에 6대를 배정해 최대 점수 14를 보존합니다. PPO에는 실제 선택 때 사용한 conditional mask와 log-probability를 저장하므로 update도 같은 분포를 사용합니다. centralized critic은 joint observation과 타격 진행도로 공통 baseline을 추정합니다. 소진 전 선택에는 에피소드 종료까지의 팀 보상을 반영하며, 소진 이후 슬롯은 PPO loss에서 제외합니다.
 
 환경 보상과 평가의 `team_return`은 위 공식을 그대로 사용합니다. PPO의 학습 보상에만 드론별 damage credit `damage_credit_scale × (해당 드론이 감소시킨 가치 / B)`를 더합니다. 기본 scale은 50이며, 실제 피해를 만든 드론만 credit을 받으므로 같은 팀 보상을 공유하던 유효 배치와 잉여 배치를 구분할 수 있습니다. `damage_credit_scale=0`이면 기존 순수 팀 보상 학습으로 돌아갑니다. 이 shaping은 성공 판정과 모델 입력, 평가 return을 바꾸지 않습니다.
 
@@ -46,7 +46,7 @@ horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_f
 
 `latest.pt`는 최고 성능 갱신 여부와 관계없이 매 평가 시점과 학습 종료 시 저장합니다. `--eval-interval 0`이면 종료 시에만 저장합니다. 모델 가중치 체크포인트이며 optimizer를 포함한 학습 재개 파일은 아닙니다.
 
-Critic은 joint observation에 표적별 `strike_progress / strike_steps_per_life`와 reward margin을 추가로 받습니다. 기본 관측은 드론당 24차원, ID를 포함한 actor 입력은 30차원입니다. critic은 150차원 팀 상태와 6차원 0 padding을 받습니다. 체크포인트 구조는 `strike_mappo_v14`이며 이전 모델은 재학습해야 합니다.
+Critic은 joint observation에 표적별 `strike_progress / strike_steps_per_life`와 reward margin을 추가로 받습니다. 기본 관측과 actor 입력은 드론당 24차원입니다. critic은 150차원 팀 상태를 받습니다. 체크포인트 구조는 `strike_mappo_v15`이며 이전 모델은 재학습해야 합니다.
 
 아군은 6대입니다. 성공 여부는 전체 섬멸이 아니라 모든 편제의 누적 섬멸값 `D`가 편제 1 초기 구성으로 정한 `B` 이상인지로 판정합니다. 가능한 최대 `B=12`에 대해 6대의 최대 획득값은 `14`이므로 기본 시나리오는 모두 성공 가능합니다.
 
