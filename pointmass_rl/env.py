@@ -11,7 +11,39 @@ from pathlib import Path
 import numpy as np
 
 TARGET_FEATURES = 4
-SELF_FEATURES = 4
+SELF_FEATURES = 3
+SUCCESS_THRESHOLDS = (5, 8, 9, 11, 12)
+DAMAGE_REWARD_RATE = 1.0
+SUCCESS_BONUS = 0.0
+EVALUATION_TASKS = (
+    "type1_formation_two",
+    "type1_formation_one_reachable",
+    "type1_formation_one_unreachable",
+)
+
+
+def evaluation_task_for_episode(config, episode):
+    if (config.horizon == 100 and config.n_targets == 5
+            and config.min_targets == 5 and not config.randomize_counts):
+        return EVALUATION_TASKS[episode % len(EVALUATION_TASKS)]
+    return None
+_TARGET_TYPES_BY_THRESHOLD = {
+    5: ((2, 2, 3), (1, 1)),
+    8: ((1, 2, 3), (1, 2)),
+    9: ((1, 2, 2), (1, 3)),
+    11: ((1, 1, 3), (2, 2)),
+    12: ((1, 1, 2), (2, 3)),
+}
+
+
+def target_remaining_value(target_type, target_life):
+    """Return the value still available from a target at its current life."""
+    target_type, target_life = int(target_type), int(target_life)
+    if target_life <= 0:
+        return 0.0
+    if target_type == 1:
+        return 5.0 if target_life >= 2 else 2.5
+    return float({2: 2, 3: 1}.get(target_type, 0))
 
 
 def strike_action(target):
@@ -34,8 +66,11 @@ class Config:
     n_targets: int = 5
     min_targets: int = 5
     randomize_counts: bool = False
-    horizon: int = 200
+    horizon: int = 100
     dt: float = 1.0
+    decision_interval: int = 1
+    sticky_assignment: bool = False
+    commit_target: bool = False
     size: float = 100.0
     strike_speed: float = 4.0 / 9.0  # 160 km/h
     sensor_range: float = 15.0
@@ -46,7 +81,7 @@ class Config:
     friendly_formation_radius: float = 1.0
     target_formation_radius: float = 6.5
     target_member_min_spacing: float = 3.0
-    target_motion_scale: float = 0.05
+    target_motion_scale: float = 0.0
     formation_separation: float = 35.0
     formation_distance_spread: float = 5.0
     formation_two_progress: float = 0.55
@@ -59,8 +94,36 @@ class Config:
     gae_lambda: float = 0.95
     mission_failure_penalty: float = 100.0
     mission_success_reward: float = 100.0
+    mode: str = 'known'
+    belief_grid: int = 4
+    belief_subcells: int = 8
+    belief_turn_radius: float = 2.0  # Map units; 200 m in the game scale.
+    belief_search_margin: float = 10.0  # 1 km on each side of the 10 km map.
+    belief_lawnmower: bool = True
+    detection_probability: float = 1.0
+    formation_layout: str = 'legacy'
 
     def __post_init__(self):
+        if self.mode not in ('known', 'belief'):
+            raise ValueError('mode must be known or belief')
+        if self.formation_layout not in ('legacy', 'configured'):
+            raise ValueError('formation_layout must be legacy or configured')
+        if type(self.belief_grid) is not int or not 1 <= self.belief_grid <= 8:
+            raise ValueError('belief_grid must be an integer in 1..8')
+        if type(self.belief_subcells) is not int or self.belief_subcells < 2:
+            raise ValueError('belief_subcells must be an integer >= 2')
+        if not np.isfinite(self.belief_turn_radius) or self.belief_turn_radius <= 0:
+            raise ValueError('belief_turn_radius must be finite and positive')
+        if type(self.belief_lawnmower) is not bool:
+            raise ValueError('belief_lawnmower must be a boolean')
+        if not np.isfinite(self.belief_search_margin) or self.belief_search_margin < 0:
+            raise ValueError('belief_search_margin must be finite and nonnegative')
+        if self.mode == 'belief' and 2*self.belief_search_margin >= self.size:
+            raise ValueError('belief_search_margin must leave a nonempty search area')
+        if not 0 < self.detection_probability <= 1:
+            raise ValueError('detection_probability must be in (0, 1]')
+        if type(self.decision_interval) is not int or self.decision_interval < 1:
+            raise ValueError('decision_interval must be a positive integer')
         if not 1 <= self.n_agents <= 10:
             raise ValueError("n_agents capacity must be 1..10")
         if not 1 <= self.min_agents <= self.n_agents:
@@ -76,9 +139,11 @@ class Config:
                     "target_formation_radius", "formation_separation",
                     "formation_distance_spread",
                     "formation_two_lateral_offset",
-                    "target_member_min_spacing", "target_motion_scale")
+                    "target_member_min_spacing")
         if any(getattr(self, key) <= 0 for key in positive):
             raise ValueError("physical scales and ranges must be positive")
+        if self.target_motion_scale < 0:
+            raise ValueError("target_motion_scale must be nonnegative")
         if not 0 <= self.strike_probability <= 1:
             raise ValueError("strike_probability must be in [0, 1]")
         if not isinstance(self.strike_steps_per_life, int) or self.strike_steps_per_life <= 0:
@@ -101,7 +166,13 @@ class Config:
 
     @classmethod
     def load(cls, path=None):
-        return cls(**json.loads(Path(path).read_text())) if path else cls()
+        if path is None:
+            return cls()
+        data = json.loads(Path(path).read_text())
+        # Older saved runs contain reward coefficients that no longer apply.
+        data.pop("damage_value_reward_scale", None)
+        data.pop("damage_credit_scale", None)
+        return cls(**data)
 
     def save(self, path):
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
@@ -112,6 +183,8 @@ class World:
 
     def __init__(self, config=None):
         self.c = config or Config()
+        if self.c.mode != 'known':
+            raise ValueError('Use BeliefWorld for mode=belief')
         self.n = self.c.n_agents
         self.obs_dim = SELF_FEATURES + TARGET_FEATURES * self.c.n_targets
 
@@ -147,8 +220,20 @@ class World:
                 return point
         raise RuntimeError("Could not place formation member")
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, success_threshold=None, evaluation_task=None):
         """Reset the world, retrying deterministic layout generations on failure."""
+        if evaluation_task is not None:
+            if evaluation_task not in EVALUATION_TASKS:
+                raise ValueError(f"Unknown evaluation task: {evaluation_task}")
+            if success_threshold is not None:
+                raise ValueError("Specify either evaluation_task or success_threshold")
+            if (self.c.horizon != 100 or self.c.n_targets != 5
+                    or self.c.min_targets != 5 or self.c.randomize_counts):
+                raise ValueError("Evaluation tasks require five fixed targets and horizon 100")
+        if (success_threshold is not None
+                and success_threshold not in SUCCESS_THRESHOLDS):
+            raise ValueError(
+                f"success_threshold must be one of {SUCCESS_THRESHOLDS}")
         # Keep the first attempt identical to the historical seed mapping;
         # derive deterministic fallback layouts only if that attempt fails.
         attempt_seeds = [np.random.SeedSequence(seed)]
@@ -158,17 +243,18 @@ class World:
         last_error = None
         for attempt_seed in attempt_seeds:
             try:
-                return self._reset_once(attempt_seed)
+                return self._reset_once(attempt_seed, success_threshold, evaluation_task)
             except RuntimeError as exc:
                 last_error = exc
         raise RuntimeError(
             f"Could not generate a valid scenario after {self.LAYOUT_RETRIES} attempts"
         ) from last_error
 
-    def _reset_once(self, seed):
+    def _reset_once(self, seed, success_threshold=None, evaluation_task=None):
         c = self.c
-        seeds = seed.spawn(4)
-        self.rng, self.motion_rng, self.sensor_rng, self.combat_rng = [np.random.default_rng(s) for s in seeds]
+        seeds = seed.spawn(5)
+        (self.rng, self.motion_rng, self.sensor_rng, self.combat_rng,
+         self.allocation_rng) = [np.random.default_rng(s) for s in seeds]
         self.t, self.done = 0, False
         edge = 3.0
         self.base = self.rng.uniform(edge, c.size - edge, 2)
@@ -202,6 +288,17 @@ class World:
         if formation_count == 2:
             formation_one_count = (len(target_ids) + 1) // 2
             self.target_formation[target_ids[formation_one_count:]] = 1
+        balanced_five_target_case = (
+            len(target_ids) == 5
+            and np.count_nonzero(self.target_formation[target_ids] == 0) == 3)
+        threshold = None
+        if balanced_five_target_case:
+            if evaluation_task is not None:
+                threshold = 5 if evaluation_task == EVALUATION_TASKS[0] else 12
+            elif success_threshold is not None:
+                threshold = success_threshold
+            else:
+                threshold = int(self.rng.choice(SUCCESS_THRESHOLDS))
         sampled_positions = None
         sampled_centers = None
         for _ in range(1000):
@@ -211,11 +308,22 @@ class World:
                 for formation in range(formation_count):
                     center = None
                     if formation == 0:
+                        if evaluation_task == EVALUATION_TASKS[1]:
+                            separation, spread = 25.0, 2.0
+                        elif evaluation_task == EVALUATION_TASKS[2]:
+                            separation, spread = 54.0, 4.0
+                        elif (evaluation_task is None and success_threshold is None
+                              and balanced_five_target_case and c.formation_layout == 'legacy'):
+                            # Train every B composition across the same near/far
+                            # range; keep the fixed evaluation layouts unchanged.
+                            separation, spread = 25.0, 33.0
+                        else:
+                            separation, spread = (c.formation_separation,
+                                                  c.formation_distance_spread)
                         for _ in range(200):
                             candidate = self._sample_point(c.min_spawn_distance)
                             distance = np.linalg.norm(candidate - self.friendly_center)
-                            if (c.formation_separation <= distance
-                                    <= c.formation_separation + c.formation_distance_spread):
+                            if separation <= distance <= separation + spread:
                                 center = candidate
                                 break
                     else:
@@ -247,8 +355,21 @@ class World:
         else:
             raise RuntimeError("Could not place target formation")
         self.formation_centers = np.stack(sampled_centers)
-        type_pool = np.resize(np.array([1, 2, 3], dtype=int), len(target_ids))
-        self.rng.shuffle(type_pool)
+        if balanced_five_target_case:
+            # Shuffle within each formation while preserving its B-specific
+            # type composition.
+            formation_one_types, formation_two_types = _TARGET_TYPES_BY_THRESHOLD[threshold]
+            formation_one_types = np.asarray(formation_one_types, dtype=int)
+            formation_two_types = np.asarray(formation_two_types, dtype=int)
+            self.rng.shuffle(formation_one_types)
+            self.rng.shuffle(formation_two_types)
+            type_pool = np.concatenate([formation_one_types, formation_two_types])
+        else:
+            if success_threshold is not None:
+                raise ValueError(
+                    "A fixed success_threshold requires the five-target 3+2 scenario")
+            type_pool = np.resize(np.array([1, 2, 3], dtype=int), len(target_ids))
+            self.rng.shuffle(type_pool)
         common_heading = self.motion_rng.uniform(0, 2 * np.pi)
         for j, point, typ in zip(target_ids, sampled_positions, type_pool):
             formation = self.target_formation[j]
@@ -271,7 +392,6 @@ class World:
         self.mem_life = np.zeros((self.n, c.n_targets), dtype=int)
         self.coverage = np.zeros((self.n, 10, 10), dtype=bool)
         self.last_goal = self.pos.copy()
-        self.selected_target = np.full(self.n, -1, dtype=int)
         self.discovered = np.zeros(c.n_targets, dtype=bool)
         self.destroyed = np.zeros(c.n_targets, dtype=bool)
         self.first_detection = 0
@@ -280,8 +400,12 @@ class World:
         self.score_area = 0.0
         self.target_destroy_step = np.full(c.n_targets, -1, dtype=int)
         self.strike_progress = np.zeros(c.n_targets, dtype=int)
-        # Participants are fixed when a strike starts.  Other drones may be
-        # heading to the same target, but do not disappear with that strike.
+        self.agent_strike_progress = np.zeros(self.n, dtype=int)
+        # Current target assignments include approaching and striking drones.
+        # Assignment alone does not reserve a strike participation slot.
+        self.target_assignment = np.zeros((c.n_targets, self.n), dtype=bool)
+        # Each participant tracks its own strike duration. Late arrivals may
+        # fill an open life slot but never inherit an earlier arrival's progress.
         self.strike_participants = np.zeros((c.n_targets, self.n), dtype=bool)
         self.last_agent_terminated = np.zeros(self.n, dtype=bool)
         self.initial_score = int(self.target_score[self.target_exists].sum())
@@ -289,6 +413,7 @@ class World:
         self.formation_one_initial_score = int(self.target_score[formation_one].sum())
         self.strike_attempts = self.strike_hits = 0
         self.rewards_total = 0.0
+        self.discounted_rewards_total = 0.0
         self._sense()
         self.discovered |= self.target_exists
         self.coverage[self.agent_active] = True
@@ -316,48 +441,44 @@ class World:
                          / self.formation_one_initial_score)
         for i in np.flatnonzero(self.agent_active):
             obs[i, :SELF_FEATURES] = [(c.horizon - self.t) / c.horizon,
-                (self.selected_target[i] + 1) / c.n_targets,
-                self.strike_progress[self.selected_target[i]] / c.strike_steps_per_life
-                if (self.selected_target[i] >= 0
-                    and self.strike_participants[self.selected_target[i], i]) else 0.0,
+                self.agent_strike_progress[i] / c.strike_steps_per_life
+                if self.strike_participants[:, i].any() else 0.0,
                 reward_margin]
             for j in np.flatnonzero(self._known_mask(i)):
                 k = target_start + TARGET_FEATURES * j
-                initial_life = 2 if self.mem_type[i, j] == 1 else 1
-                remaining_value = (self.target_score[j] * self.mem_life[i, j]
-                                   / initial_life)
+                remaining_value = target_remaining_value(
+                    self.mem_type[i, j], self.mem_life[i, j])
                 capacity = min(2 if self.target_type[j] == 1 else 1,
                                int(self.target_life[j]))
-                contenders = np.flatnonzero(self.agent_active
-                                            & (self.selected_target == j))
-                participants = np.flatnonzero(self.agent_active
-                                              & self.strike_participants[j])
-                candidates = np.setdiff1d(contenders, participants, assume_unique=True)
-                distance = np.linalg.norm(self.pos[candidates] - self.targets[j], axis=1)
-                nearest = candidates[np.argsort(distance, kind="stable")]
-                reserved = np.concatenate([participants, nearest])[:capacity]
-                selectable = i in reserved or len(reserved) < capacity
+                participant = self.strike_participants[j, i]
+                occupied = int(np.count_nonzero(
+                    self.agent_active & self.strike_participants[j]))
+                in_range = (np.linalg.norm(self.pos[i] - self.targets[j])
+                            <= c.strike_range)
+                # Approaching drones do not reserve capacity. A live target is
+                # masked for an outsider only when it reaches strike range and
+                # actual participants have already filled every available slot.
+                selectable = participant or occupied < capacity or not in_range
                 obs[i, k:k + TARGET_FEATURES] = [
                     *((self.mem_pos[i, j] - self.perceived_pos[i]) / c.size),
                     remaining_value / 5.0, float(selectable)]
         return obs
 
     def resolve_setpoints(self, target_ids):
-        """Resolve target choices to the latest known strike positions."""
+        """Resolve live targets; unavailable choices leave the drone in place."""
         target_ids = np.asarray(target_ids)
         goals = self.pos.copy()
         for i, target in enumerate(target_ids):
             if not self.agent_active[i]:
                 continue
-            if not self._known_mask(i)[target]:
-                raise ValueError(f"Drone {i} selected unknown target {target}")
-            goals[i] = self.mem_pos[i, target]
+            if self._known_mask(i)[target]:
+                goals[i] = self.mem_pos[i, target]
         return np.clip(goals, 0, self.c.size)
 
     def locked_targets(self):
         """Only participating drones are committed during an ongoing strike."""
-        return np.where(self.agent_active & self.strike_participants.any(axis=0),
-                        self.selected_target, -1)
+        participating = self.agent_active & self.strike_participants.any(axis=0)
+        return np.where(participating, self.strike_participants.argmax(axis=0), -1)
 
     def committed_targets(self, proposed_targets):
         """Keep each drone's current target until its strike action completes."""
@@ -393,36 +514,59 @@ class World:
                 close = attackers[
                     np.linalg.norm(self.pos[attackers] - self.targets[j], axis=1)
                     <= self.c.strike_range]
-                distance = np.linalg.norm(self.pos[close] - self.targets[j], axis=1)
-                participants = close[np.argsort(distance, kind="stable")[:open_slots]]
+                if len(close) > open_slots:
+                    # Existing participants keep their slots. Only drones that
+                    # arrive together for the remaining slots are sampled.
+                    participants = self.allocation_rng.choice(
+                        close, size=open_slots, replace=False)
+                else:
+                    participants = close
                 self.strike_participants[j, participants] = True
-            if not self.strike_participants[j].any():
+                self.agent_strike_progress[participants] = 0
+            current = self.strike_participants[j].copy()
+            if not current.any():
+                self.strike_progress[j] = 0
                 continue
-            # A late arrival may join an ongoing strike while a type/life slot
-            # remains. All participants finish and are expended together.
-            self.strike_progress[j] += 1
-            if self.strike_progress[j] < self.c.strike_steps_per_life:
+            # Every drone must serve the full strike duration from its own
+            # arrival. Late arrivals do not inherit another drone's progress.
+            self.agent_strike_progress[current] += 1
+            finishing = current & (
+                self.agent_strike_progress >= self.c.strike_steps_per_life)
+            if not finishing.any():
+                self.strike_progress[j] = int(
+                    self.agent_strike_progress[current].max())
                 continue
-            self.strike_progress[j] = 0
             self.strike_attempts += 1
-            participants = self.strike_participants[j].copy()
-            self.strike_participants[j] = False
-            self.selected_target[participants] = -1
+            self.strike_participants[j, finishing] = False
+            self.target_assignment[:, finishing] = False
             if self.combat_rng.random() >= self.c.strike_probability:
-                self.agent_active[participants] = False
+                self.agent_active[finishing] = False
+                self.agent_strike_progress[finishing] = 0
+                remaining = self.strike_participants[j]
+                self.strike_progress[j] = (int(
+                    self.agent_strike_progress[remaining].max())
+                    if remaining.any() else 0)
                 continue
             self.strike_hits += 1
-            damage = min(self.target_life[j], int(participants.sum()))
+            damage = min(self.target_life[j], int(finishing.sum()))
+            old_life = int(self.target_life[j])
             self.target_life[j] -= damage
             self.mem_life[:, j] = self.target_life[j]
-            initial_life = 2 if self.target_type[j] == 1 else 1
-            damage_value = self.target_score[j] * damage / initial_life
+            damage_value = (target_remaining_value(self.target_type[j], old_life)
+                            - target_remaining_value(
+                                self.target_type[j], self.target_life[j]))
             self.score += damage_value
+            self.last_damage_by_agent[finishing] += damage_value / finishing.sum()
             if self.target_life[j] <= 0:
                 self.destroyed[j] = True
                 self.active[j] = False
                 self.target_destroy_step[j] = self.t
-            self.agent_active[participants] = False
+            self.agent_active[finishing] = False
+            self.agent_strike_progress[finishing] = 0
+            remaining = self.strike_participants[j]
+            self.strike_progress[j] = (int(
+                self.agent_strike_progress[remaining].max())
+                if remaining.any() else 0)
 
     def step(self, action):
         if self.done:
@@ -438,7 +582,9 @@ class World:
         old_pos = self.pos.copy()
         goals = self.resolve_setpoints(targets)
         self.last_goal = goals.copy()
-        self.selected_target = np.where(self.agent_active, targets, -1)
+        self.target_assignment.fill(False)
+        active_ids = np.flatnonzero(self.agent_active)
+        self.target_assignment[targets[active_ids], active_ids] = True
         for i in np.flatnonzero(self.agent_active):
             delta = goals[i] - self.pos[i]
             dist = np.linalg.norm(delta)
@@ -453,6 +599,7 @@ class World:
         # Resolve an approach completed during this decision interval before
         # advancing the target to the next interval.
         self._resolve_strikes(targets)
+        self.target_assignment[~self.target_exists | self.destroyed] = False
         # B is fixed by formation 1's initial type/life composition. D is
         # cumulative type-weighted life damage across both formations.
         margin = ((self.formation_one_initial_score - self.score)
@@ -482,13 +629,18 @@ class World:
         terminated = False
         truncated = self.t >= c.horizon
         self.done = truncated
-        self.rewards_total += float(reward.sum())
+        team_reward = float(reward.sum())
+        self.rewards_total += team_reward
+        self.discounted_rewards_total += (
+            c.discount_gamma ** (self.t - 1) * team_reward)
         self.observation = self._obs()
         return self.observation.copy(), reward.astype(np.float32), terminated, truncated, self.metrics()
 
     def metrics(self):
         initial = self.target_exists
-        return dict(team_return=self.rewards_total, score=float(self.score),
+        return dict(team_return=self.rewards_total,
+            discounted_team_return=self.discounted_rewards_total,
+            score=float(self.score),
             baseline_score=float(self.formation_one_initial_score),
             mission_success=bool(self.score >= self.formation_one_initial_score),
             destroyed_fraction=float(self.destroyed[initial].mean()) if initial.any() else 1.0,
@@ -508,7 +660,11 @@ class World:
             targets=self.targets.tolist(), target_exists=self.target_exists.tolist(), active=self.active.tolist(),
             destroyed=self.destroyed.tolist(), target_formation=self.target_formation.tolist(),
             target_type=self.target_type.tolist(), target_life=self.target_life.tolist(),
-            target_score=self.target_score.tolist(), target_destroy_step=self.target_destroy_step.tolist(),
-            visible=self.visible.tolist(), selected_target=self.selected_target.tolist(),
+            target_score=[target_remaining_value(typ, life) for typ, life in
+                          zip(self.target_type, self.target_life)],
+            target_destroy_step=self.target_destroy_step.tolist(),
+            visible=self.visible.tolist(),
             goal_positions=self.last_goal.tolist(), strike_progress=self.strike_progress.tolist(),
+            agent_strike_progress=self.agent_strike_progress.tolist(),
+            target_assignment=self.target_assignment.tolist(),
             strike_participants=self.strike_participants.tolist(), metrics=self.metrics())

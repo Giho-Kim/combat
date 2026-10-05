@@ -1,0 +1,691 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=23mm]{geometry}
+\usepackage{amsmath,amssymb,booktabs,tabularx,array}
+\usepackage{graphicx}
+\usepackage{enumitem,microtype}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\setlist[itemize]{leftmargin=1.4em,itemsep=3pt,topsep=4pt}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=4pt,topsep=4pt}
+\renewcommand{\arraystretch}{1.18}
+\newcommand{\E}{\mathbb E}
+\newcommand{\ind}{\mathbf 1}
+\newcommand{\R}{\mathbb R}
+\newcommand{\lead}[1]{\medskip\textbf{#1}\par}
+\newcommand{\takeaway}[1]{\medskip\noindent\fbox{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{#1}}\medskip}
+\title{Cooperative Target Assignment}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+\vspace{-16mm}
+
+\takeaway{\textbf{Goal:} Assign five drones to five targets to maximize the total target value removed within 100 seconds. Each completed strike consumes one drone.}
+
+\section{Mission setup}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Quantity & Setting \\
+\midrule
+Drones / targets & $N=5$ / $M=5$ \\
+Map / coordinate unit & $10\times10$ km / 100 m \\
+Horizon / time step & $H=100$ seconds / $\Delta t=1$ second \\
+Drone speed & $v_{\max}=4/9$ units/s $=160$ km/h \\
+Target motion & Stationary \\
+Strike range / duration & 5 m / $K=10$ seconds per drone \\
+Strike success probability & 1 \\
+Available information & All target positions, types, and remaining lives; friendly states and previous intentions \\
+Decision & One target per active drone, every second during approach \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Target types}
+\begin{center}
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+Type & Count & Initial lives & Remaining value & Strike capacity \\
+\midrule
+1 & 2 & 2 & $5\to2.5\to0$ & Up to 2 drones \\
+2 & 2 & 1 & $2\to0$ & 1 drone \\
+3 & 1 & 1 & $1\to0$ & 1 drone \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\lead{Training layouts}
+\begin{itemize}
+\item Friendly starting cluster: radius 100 m.
+\item Two target formations: three targets and two targets; radius 650 m each.
+\item First formation centre: 2.5--5.8 km from the friendly centre.
+\item Second centre: 55\% along that route, offset laterally by 800 m.
+\end{itemize}
+
+The success threshold $B$ is the first formation's initial value.
+Training samples each row below with equal probability.
+\begin{center}
+\begin{tabular}{@{}ccc@{}}
+\toprule
+$B$ & Formation 1 types & Formation 2 types \\
+\midrule
+5 & $(2,2,3)$ & $(1,1)$ \\
+8 & $(1,2,3)$ & $(1,2)$ \\
+9 & $(1,2,2)$ & $(1,3)$ \\
+11 & $(1,1,3)$ & $(2,2)$ \\
+12 & $(1,1,2)$ & $(2,3)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\newpage
+\section{State space}
+\takeaway{The state collects remaining time, physical states, and the team's previous intentions. The critic receives \textbf{111 scalar entries}.}
+
+Indices: drone $i,m\in\mathcal I=\{1,\ldots,N\}$;
+target $k\in\mathcal K=\{1,\ldots,M\}$; time $t\in\{0,\ldots,H\}$.
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lXl@{}}
+\toprule
+Symbol & Meaning & Domain \\
+\midrule
+$r_t^i$ & Drone position & $[0,L_{\rm map}]^2$ \\
+$\sigma_t^i$ & Active-drone indicator & $\{0,1\}$ \\
+$\zeta_t^i$ & Elapsed strike steps; zero during approach & $\{0,\ldots,K-1\}$ \\
+$v_t^i$ & Measured world-frame velocity & $\R^2$ \\
+$q^k$ & Stationary target position & $[0,L_{\rm map}]^2$ \\
+$c^k$ & One-hot target type & $\{e_1,e_2,e_3\}$ \\
+$L_k(t)$ & Remaining lives & $\{0,\ldots,L_k(0)\}$ \\
+$P_{t-1}^{ik}$ & Previous probability of selecting target $k$ & $[0,1]$ \\
+$C_{t-1}^{ik}$ & Previous actual selection of target $k$ & $\{0,1\}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Normalization}
+With $L_{\rm map}=100$ and $K=10$,
+\begin{align*}
+\tau_t&=(H-t)/H,& \bar r_t^i&=r_t^i/L_{\rm map},& \bar q^k&=q^k/L_{\rm map},\\
+\bar v_t^i&=v_t^i/v_{\max},& \bar\zeta_t^i&=\zeta_t^i/K,& \bar L_k(t)&=L_k(t)/2.
+\end{align*}
+
+\lead{Global state}
+\[
+s_t=\bigl(\tau_t,\{d_t^i\}_{i=1}^N,\{y_t^k\}_{k=1}^M,P_{t-1},C_{t-1}\bigr),
+\]
+\[
+\underbrace{d_t^i=(\bar r_t^i,\sigma_t^i,\bar\zeta_t^i,\bar v_t^i)}_{\text{drone record: 6 entries}},
+\qquad
+\underbrace{y_t^k=(\bar q^k,c^k,\bar L_k(t))}_{\text{target record: 6 entries}}.
+\]
+\begin{center}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Block & Time & Drones & Targets & $P$ & $C$ \\
+\midrule
+Entries & 1 & $6N=30$ & $6M=30$ & $NM=25$ & $NM=25$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\[
+\boxed{\mathcal S\subset\R^{1+6N+6M+2NM}=\R^{111}}
+\]
+
+\lead{Intention and strike participation}
+\begin{itemize}
+\item Initially: $P_{-1}^{ik}=1/M$ and $C_{-1}^{ik}=0$.
+\item Each active drone subsequently has one probability row in $P$ and one selected target in $C$.
+\item Inactive drones: zero intention rows and velocity; masked drone nodes.
+\end{itemize}
+\[
+S_t^{ik}=\ind\{\sigma_t^i=1,\ \zeta_t^i>0\}\,C_{t-1}^{ik}
+\quad\text{indicates an ongoing strike on target }k.
+\]
+
+\newpage
+\section{Actions, transitions, and objective}
+\lead{Action space}
+\[
+a_{i,t}\in\mathcal K,\qquad
+\boldsymbol a_t\in\mathcal K^N,\qquad |\mathcal K^N|=5^5=3125.
+\]
+For target $k$, let $b_k=2$ for Type 1 and $b_k=1$ otherwise.
+\[
+\kappa_k(t)=\min\{b_k,L_k(t)\},\qquad n_k(t)=\sum_i S_t^{ik}.
+\]
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Drone status & Target selection \\
+\midrule
+Approaching & $\mathcal A_i(s_t)=\{k:L_k(t)>0,\ n_k(t)<\kappa_k(t)\}$ \\
+Striking & Keep the current target until completion \\
+Inactive & Action has no physical effect \\
+Empty available set & Use target index 1 as a categorical fallback \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{State transition}
+\begin{enumerate}
+\item \textbf{Move} each active drone toward its selected target.
+\item \textbf{Admit arrivals} within 5 m into free strike slots. Existing participants retain their slots; excess simultaneous arrivals are selected randomly.
+\item \textbf{Advance strikes} by one second per participant, including new arrivals.
+\item \textbf{Complete strikes}: after ten seconds, remove one target life per successful drone and consume the completing drones.
+\item \textbf{Update} reward, velocity, remaining time, and previous intentions.
+\end{enumerate}
+\[
+r_{t+1}^i=r_t^i+
+\min\!\left(1,\frac{v_{\max}\Delta t}{\|q^{a_{i,t}}-r_t^i\|}\right)
+(q^{a_{i,t}}-r_t^i).
+\]
+The displacement is zero at the destination. Target positions remain fixed.
+
+\lead{Reward and mission success}
+Let $V_k(t)$ denote remaining target value, as listed in the target-type table.
+\begin{align*}
+D_t&=\sum_k[V_k(0)-V_k(t)],& r_t&=D_{t+1}-D_t,\\
+B&=\sum_{k\in\text{formation 1}}V_k(0),& \text{success}&=\ind\{D_H\ge B\}.
+\end{align*}
+\takeaway{The team reward is the decrease in remaining target value. Both formations contribute to the score.}
+
+\lead{Finite-horizon objective}
+\[
+\boxed{J(\theta)=\E_{\pi_\theta}\!\left[\sum_{t=0}^{H-1}r_t\right]=\E_{\pi_\theta}[D_H]},
+\qquad \gamma=1.
+\]
+Episodes end at $H=100$. For the remaining mission,
+\[
+V^\pi(s_t)=\E_\pi\!\left[\sum_{u=t}^{H-1}r_u\mid s_t\right],\qquad
+Q^\pi(s_t,\boldsymbol a_t)=\E_\pi\!\left[\sum_{u=t}^{H-1}r_u\mid s_t,\boldsymbol a_t\right].
+\]
+
+\newpage
+\section{Observation and policy}
+\takeaway{The actor receives relative geometry and shared previous intentions, then assigns a selection probability to each available target.}
+
+\lead{Local observation}
+\[
+x_t^{ik}=\left(\frac{q^k-r_t^i}{L_{\rm map}},c^k,\bar L_k(t)\right)\in\R^6,
+\qquad \delta_t^{im}=\frac{r_t^m-r_t^i}{L_{\rm map}}\in\R^2.
+\]
+\[
+\rho_t^i=\sigma_t^i\ind\{\zeta_t^i=0\}
+\quad\text{indicates an active drone available to choose a target.}
+\]
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Observation block & Contents \\
+\midrule
+Time and self & $\tau_t,\sigma_t^i,\rho_t^i,\bar v_t^i$ \\
+Each target $k$ & Relative position, one-hot type, remaining lives: $x_t^{ik}$ \\
+Each teammate $m\ne i$ & Relative position $\delta_t^{im}$, activity $\sigma_t^m$, availability $\rho_t^m$, velocity $\bar v_t^m$ \\
+Shared intentions & Previous probabilities $P_{t-1}$ and actual choices $C_{t-1}$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+\[
+\begin{split}
+o_t^i=\bigl(&\tau_t,\sigma_t^i,\rho_t^i,\bar v_t^i,\{x_t^{ik}\}_k,\\
+&\{(\delta_t^{im},\sigma_t^m,\rho_t^m,\bar v_t^m)\}_{m\ne i},P_{t-1},C_{t-1}\bigr).
+\end{split}
+\]
+
+\lead{Target scores and probabilities}
+The shared actor assigns a score $\ell_t^{ik}$ to each candidate target:
+\[
+\ell_t^{ik}=f_\theta(o_t^i,k),\qquad
+\pi_{\theta,i}(k\mid o_t^i)=
+\frac{\exp(\ell_t^{ik})}{\sum_{j\in\mathcal A_i(s_t)}\exp(\ell_t^{ij})}.
+\]
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Quantity & Role \\
+\midrule
+$\theta$ & Actor parameters shared across drones and targets \\
+$\ell_t^{ik}$ & Learned preference for assigning drone $i$ to target $k$ \\
+$\mathcal A_i(s_t)$ & Available targets after applying strike-capacity constraints \\
+$\pi_{\theta,i}$ & Target-selection probabilities that sum to one over available targets \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Action selection}
+\begin{itemize}
+\item Training: each drone samples from its distribution.
+\item Evaluation: each drone selects its highest-scoring available target; the score resolver handles assignment conflicts.
+\end{itemize}
+The joint training policy factorizes as
+\[
+\pi_\theta(\boldsymbol a_t\mid\boldsymbol o_t)
+=\prod_{i=1}^{N}\pi_{\theta,i}(a_{i,t}\mid o_t^i).
+\]
+
+\newpage
+\section{Actor--critic learning}
+\takeaway{The critic learns the return of a joint assignment. The actor learns which individual choices improve that return.}
+
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lXX@{}}
+\toprule
+ & Actor & Critic \\
+\midrule
+Input & Drone observation $o_t^i$ & Global state and joint choice $(s_t,\boldsymbol a_t)$ \\
+Output & Target probabilities $\pi_{\theta,i}$ & Predicted remaining team return $Q_\phi$ \\
+Learning signal & Counterfactual advantage & Collected rewards and a continuation estimate \\
+Parameters & $\theta$ & $\phi$; slowly updated target copy $\bar\phi$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+\[
+\boxed{\text{Collect}}\ \longrightarrow\
+\boxed{\text{Fit critic}}\ \longrightarrow\
+\boxed{\text{Assign credit}}\ \longrightarrow\
+\boxed{\text{Update actor}}
+\]
+
+\subsection{Critic objective}
+\begin{enumerate}
+\item Collect states, observations, joint actions, action probabilities, rewards, and episode endings using $\pi_{\mathrm{old}}$.
+\item Compute a return target $G_t$ backward through the rollout.
+\item Fit $Q_\phi(s_t,\boldsymbol a_t)$ to $G_t$ and update the target copy.
+\end{enumerate}
+\[
+G_t=r_t+\gamma(1-d_t)
+\bigl[(1-\lambda)Q_{\bar\phi}(s_{t+1},\boldsymbol a_{t+1})+\lambda G_{t+1}\bigr].
+\]
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Term & Meaning \\
+\midrule
+$r_t$ & Team reward observed immediately after the joint action \\
+$Q_{\bar\phi}(s_{t+1},\boldsymbol a_{t+1})$ & Target critic's estimate of the remaining return \\
+$G_{t+1}$ & Return target carried backward from the next step \\
+$\lambda=0.97$ & Weight controlling how far collected rewards propagate backward \\
+$d_t$ & 1 at the mission horizon, which sets continuation to zero \\
+\bottomrule
+\end{tabularx}
+\end{center}
+At a rollout cutoff, the target critic supplies the continuation value; $\gamma=1$.
+\[
+\mathcal L_Q=\E\bigl[\operatorname{Huber}_{10}(Q_\phi(s_t,\boldsymbol a_t)-G_t)\bigr],
+\qquad \bar\phi\leftarrow0.99\bar\phi+0.01\phi.
+\]
+Huber loss penalizes prediction error quadratically near zero and linearly for large errors.
+The target copy is updated after each critic optimizer step.
+
+\subsection{Counterfactual baseline}
+\begin{enumerate}
+\item Hold the state and all other drones' choices $\boldsymbol a_{-i}$ fixed.
+\item Evaluate each alternative target $u$ for drone $i$ with the critic.
+\item Average those values using the collected action probabilities.
+\item Subtract this average from the value of the collected joint action.
+\end{enumerate}
+\begin{align*}
+b_i(s,\boldsymbol a_{-i})
+&=\sum_{u\in\mathcal K}\pi_{\mathrm{old},i}(u\mid o_i)
+Q_\phi\bigl(s,(\boldsymbol a_{-i},u)\bigr),\\
+A_i(s,\boldsymbol a)&=Q_\phi(s,\boldsymbol a)-b_i(s,\boldsymbol a_{-i}).
+\end{align*}
+$A_i$ measures how the selected target compares with
+that drone's probability-weighted alternatives, given the other drones' choices.
+
+\newpage
+\subsection{PPO objective}
+Normalize advantages over valid actor decisions and keep them fixed during the actor update:
+\[
+\widehat A_i=\frac{A_i-\operatorname{mean}(A)}{\operatorname{std}(A)+10^{-5}},
+\qquad
+\omega_i=\frac{\pi_{\theta,i}(a_i\mid o_i)}{\pi_{\mathrm{old},i}(a_i\mid o_i)}.
+\]
+\begin{align*}
+\mathcal L_\pi
+&=-\E\!\left[\min\!\left(\omega_i\widehat A_i,
+\operatorname{clip}(\omega_i,1-\epsilon,1+\epsilon)\widehat A_i\right)\right]\\
+&\quad-\beta\E[\mathcal H(\pi_i)].
+\end{align*}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Component & Effect on learning \\
+\midrule
+Positive $\widehat A_i$ & Encourages the collected choice \\
+Negative $\widehat A_i$ & Discourages the collected choice \\
+Probability ratio $\omega_i$ & Measures the change from the rollout policy \\
+Clipping with $\epsilon=0.2$ & Caps the surrogate's incentive for a large change in probability \\
+Entropy bonus, $\beta=0.01$ & Encourages continued exploration across available targets \\
+Decision mask & Includes the steps at which a drone actually chooses a target \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Update schedule}
+\begin{enumerate}
+\item Keep the collected return targets fixed while fitting the critic.
+\item Use the fitted critic to compute counterfactual advantages.
+\item Keep those advantages fixed while updating the actor.
+\item Collect a new rollout with the updated actor.
+\end{enumerate}
+The actor and critic use separate optimizers and separate parameters.
+
+\lead{Training parameters}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Parameter & Value \\
+\midrule
+Environments / rollout length & 32 / 200 steps per environment \\
+Actor / critic epochs & 10 / 40 \\
+Actor / critic minibatch & 256 drone rows / 256 joint transitions \\
+Optimizer & Adam; learning rate $5\times10^{-4}$, epsilon $10^{-5}$ \\
+Discount / trace coefficient & $\gamma=1$ / $\lambda=0.97$ \\
+Gradient norm limit & 10 \\
+Training seed & 7 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+The training counter increases once per active drone per simulation step.
+
+\newpage
+\section{Shared networks for variable drone and target counts}
+\takeaway{Represent each entity with a fixed-width record, apply the same learned functions to every record, and combine records by weighted sums. Changing $N$ or $M$ changes how many records are processed.}
+
+\subsection{Encoding and attention}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Term & Meaning in this model \\
+\midrule
+Record & A fixed list of measured attributes for one entity or relation \\
+Encoding & A learned function that converts a record into 64 numerical features \\
+Token & One encoded record, represented by that feature vector \\
+Attention & Computing an input-dependent weight for each source record and summing its weighted contribution \\
+Mask & A zero/one indicator that removes inactive or absent entries from a sum \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Let $h$ represent the recipient and $z_j$ a source record, both after encoding.
+Each attention operation performs the following steps:
+\begin{enumerate}
+\item \textbf{Compare}: transform $h$ and $z_j$ into vectors used to measure their relevance.
+\item \textbf{Weight}: convert the comparison into a number $g_j$ between zero and one.
+\item \textbf{Summarize}: multiply the source's learned contribution $b_j$ by $g_j$, then sum over valid sources.
+\item \textbf{Update}: combine this summary with the recipient's current features.
+\end{enumerate}
+
+For one parallel comparison channel,
+\begin{align*}
+q&=W_qh, & k_j&=W_kz_j,\\
+g_j&=\operatorname{sigmoid}\!\left(\frac{q^\top k_j}{\sqrt{d_h}}\right),
+& b_j&=\operatorname{softplus}(W_vz_j),\\
+m&=\sum_j\mu_j g_j b_j,
+& \operatorname{sigmoid}(x)&=\frac{1}{1+e^{-x}}.
+\end{align*}
+Here $\mu_j\in\{0,1\}$ is the validity mask and
+$\operatorname{softplus}(x)=\log(1+e^x)$ is applied to each coordinate.
+Bias terms are included in the learned transformations.
+
+\begin{itemize}
+\item Four parallel channels, called \textbf{heads}, each produce a 16-entry summary.
+\item Joining the four summaries gives $m_{\rm all}\in\R^{64}$.
+\item A small learned function $F$ updates the recipient:
+$h' = h+F([h,m_{\rm all}])$.
+\item $[h,m_{\rm all}]$ means joining the two vectors end to end.
+\end{itemize}
+Each weighted sum returns 16 entries per head,
+regardless of the number of sources. Summing the contributions lets the
+aggregate reflect how many entities contribute.
+
+\newpage
+\subsection{Shared target-scoring actor}
+\lead{Fixed-width inputs}
+For acting drone $i$ and candidate target $k$,
+\begin{align*}
+u_t^{ik}&=(x_t^{ik},\tau_t,P_{t-1}^{ik},C_{t-1}^{ik},\sigma_t^i,\rho_t^i,\bar v_t^i)\in\R^{13},\\
+w_t^{imk}&=(\delta_t^{im},\rho_t^m,\bar v_t^m,P_{t-1}^{mk},C_{t-1}^{mk})\in\R^7.
+\end{align*}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lcX@{}}
+\toprule
+Record & Width & Contents \\
+\midrule
+Candidate $u_t^{ik}$ & 13 & Target attributes, time, own previous intention, own activity and velocity \\
+Teammate $w_t^{imk}$ & 7 & Relative position, availability, velocity, previous intention for target $k$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Target scoring}
+\begin{enumerate}
+\item Encode the candidate record and each teammate record into 64 features.
+\item Use the candidate as the recipient and active teammates as sources.
+\item Apply two successive attention updates to the candidate features.
+\item Convert the updated candidate features into one scalar score $\ell_t^{ik}$.
+\end{enumerate}
+\[
+\boxed{u_t^{ik}\in\R^{13}}\ \longrightarrow\
+\boxed{h^{ik}\in\R^{64}}\ \xrightarrow{\text{read teammates twice}}\
+\boxed{\ell_t^{ik}\in\R}.
+\]
+The candidate representation is the \textbf{query}: it determines which
+teammate information matters for scoring that target.
+
+\lead{Variable input cardinality}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Change & Effect on the computation \\
+\midrule
+More drones & More teammate records enter each weighted sum \\
+More targets & Repeat the same scoring function for more candidate records \\
+Target selection & Apply the masked softmax over the resulting $M$ scores \\
+Trainable functions & The candidate encoder, teammate encoder, attention updates, and scalar output map retain the same dimensions \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Parameter sharing}
+\[
+E_{\rm candidate}:\R^{13}\to\R^{64},\qquad
+E_{\rm peer}:\R^7\to\R^{64},\qquad
+f_{\rm score}:\R^{64}\to\R.
+\]
+Each function is reused across all drones and targets. Two attention layers
+have their own learned parameters, each shared across all candidate computations.
+
+\newpage
+\subsection{Graph-based team critic}
+\lead{Fixed-width inputs}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lccX@{}}
+\toprule
+Record & Number & Width & Contents \\
+\midrule
+Drone $d_t^i$ & $N$ & 6 & Position, activity, strike progress, velocity \\
+Target $y_t^k$ & $M$ & 6 & Position, type, remaining lives \\
+Relation $e_t^{ik}$ & $NM$ & 5 & Current choice, previous intention, relative position \\
+\bottomrule
+\end{tabularx}
+\end{center}
+\[
+e_t^{ik}=\bigl(\ind\{a_{i,t}=k\},P_{t-1}^{ik},C_{t-1}^{ik},\bar q^k-\bar r_t^i\bigr).
+\]
+An entity record is called a \textbf{node}; a drone--target relation is called
+an \textbf{edge}. The collection forms the critic's graph.
+
+\lead{Relation-conditioned attention}
+A recipient uses the same weighted-sum operation, now including its relation to each source:
+\[
+k_j=W_kz_j+W_{ek}e_j,\qquad
+b_j=\operatorname{softplus}(W_vz_j+W_{ev}e_j).
+\]
+The relation influences both the relevance weight and the information sent.
+The current assignment enters through $\ind\{a_{i,t}=k\}$.
+
+\lead{Message passing and team readout}
+\begin{enumerate}
+\item Encode each drone and target into 64 features, adding a learned representation of remaining time.
+\item Each target combines information from active drones using their relations.
+\item Each drone combines information from the updated targets. Relative positions reverse direction for this exchange.
+\item Repeat steps 2--3 once more.
+\item Combine all valid drone and target features into one 64-entry team summary, using weights conditioned on remaining time.
+\item Join that summary with the 64-entry time representation and map the resulting 128 entries to one scalar $Q_\phi$.
+\end{enumerate}
+\[
+\boxed{N+M\text{ entity records}}\ \longrightarrow\
+\boxed{\text{Team summary}\in\R^{64}}\ \longrightarrow\
+\boxed{Q_\phi\in\R}.
+\]
+
+\lead{Parameter dimensions and permutation symmetry}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Property & Reason \\
+\midrule
+Same parameter dimensions for any $N,M$ & Encoders process one fixed-width record at a time; weighted sums have a fixed output width \\
+Actor scores follow entity reordering & The same scorer is applied to every candidate; teammate information is summed \\
+Team value is invariant to entity reordering & Relations follow their entities, and the final team summary is a sum over valid entities \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Let $\mathcal R$ consistently relabel drone and target records, intentions,
+relations, and actions, with index permutations $\pi_D$ and $\pi_T$.
+\[
+\ell^{\pi_D(i),\pi_T(k)}(\mathcal R s)=\ell^{ik}(s),\qquad
+Q_\phi(\mathcal R s,\mathcal R\boldsymbol a)=Q_\phi(s,\boldsymbol a).
+\]
+Here $\ell^{ik}(s)$ denotes the actor score formed from drone $i$'s observation
+of $s$. The actor is permutation equivariant; the scalar critic is permutation invariant.
+
+\newpage
+\section{Evaluation}
+\begin{itemize}
+\item Scenarios are sampled from the training distribution, using the same
+formation-layout and target-type sampling rules.
+\item All policies and checkpoints are evaluated on the same 100 held-out
+scenarios, with seeds 30,000--30,099.
+\item Checkpoints are evaluated every 100,000 active-drone transitions.
+\end{itemize}
+
+\lead{Metrics}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Metric & Definition \\
+\midrule
+Final score & $D_H$ \\
+Team return & $\sum_{t=0}^{H-1}r_t=D_H$ \\
+Mission success rate & Episode average of $\ind\{D_H\ge B\}$ \\
+Destroyed fraction & $M^{-1}\sum_k\ind\{L_k(H)=0\}$ \\
+Score AUC & $H^{-1}\sum_{t=1}^{H}D_t/B$; rewards earlier accumulation of score \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\lead{Baseline allocation}
+Nearest-first and type-priority use the following procedure:
+\begin{enumerate}
+\item Retain valid approach assignments and reserve their target slots.
+\item For each candidate target, form a team from the closest free drones to fill its unreserved slots.
+\item Select a candidate using the rule below, assign its team, and repeat.
+\end{enumerate}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Policy & Selection rule \\
+\midrule
+Nearest-first & Smallest distance from the candidate target to its closest free drone \\
+Type-priority & Type 1 before Type 2 before Type 3; break ties by the same distance \\
+Random & Independently sample an available target uniformly; retain ongoing strikes \\
+\bottomrule
+\end{tabularx}
+\end{center}
+A candidate team requires enough free drones to fill the unreserved slots.
+
+\lead{Score resolver}
+When several drones choose the same target, the resolver uses their actor
+scores $\ell_t^{ik}$ to allocate the available slots:
+\begin{enumerate}
+\item Retain drones already participating in a strike.
+\item For each contested target $k$, rank the other candidates by
+decreasing $\ell_t^{ik}$ and admit the highest-scoring drones into the remaining slots.
+\item Rejected drones mask that target and choose again. Repeat until the
+assignment is resolved.
+\end{enumerate}
+Training collects direct policy choices; evaluation applies the score resolver.
+
+\newpage
+\subsection{Learning curves on held-out scenarios}
+\begin{figure}[htbp]
+\centering
+\IfFileExists{runs/target_coma_v15_train_dist_audit/learning_curves_iqm_ma5.pdf}{%
+  \includegraphics[width=\linewidth]{runs/target_coma_v15_train_dist_audit/learning_curves_iqm_ma5.pdf}%
+}{%
+  \fbox{\parbox[c][5.5cm][c]{0.93\linewidth}{\centering
+  Learning-curve figure\\[6pt]
+  Left: episode return IQM\\
+  Right: success rate relative to the oracle}}%
+}
+\caption{Learning curves on 100 fixed held-out scenarios sampled from the
+training distribution. The two learned-policy curves use the same checkpoints
+with score-based or distance-based conflict ranking. Returns are summarized
+by the interquartile mean (IQM); success rates are divided by the oracle's
+success rate. Learned-policy curves use a trailing five-checkpoint average.}
+\label{fig:learning-curves}
+\end{figure}
+
+\lead{Evaluation statistics}
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Element & Meaning \\
+\midrule
+Horizontal axis & Training transitions accumulated over active drones \\
+Return IQM & Mean of the middle 50\% of the 100 episode returns \\
+Relative success & Policy success rate divided by the oracle success rate of 58\% \\
+Score / distance ranking & Two conflict-resolution rules applied to the same trained actor \\
+Nearest-first / type-priority & Rule-based target-assignment baselines \\
+Oracle & Physical upper bound on attainable target value \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+
+\begin{itemize}
+\item The score-ranked policy improves rapidly
+during the first few million transitions, then remains near a return IQM of
+9.2 and approximately 90\% of the oracle success rate.
+\item The score-ranked and distance-ranked
+curves become closely aligned. For competing drone--target assignments with
+the same target value, this is consistent with learned scores favoring
+shorter distances. Distance ranking provides a comparison of how the same
+actor's competing choices are resolved.
+\item At 10 million transitions, the plotted
+score-ranked policy reaches a return IQM of 9.198 and relative success of
+89.0\%. Type-priority reaches 9.12 and 87.9\%; nearest-first reaches 8.88
+and 75.9\%. The oracle return IQM is 9.84.
+\end{itemize}
+
+\section{Scenario notes}
+Three configurations to keep in mind when examining assignments:
+\begin{center}
+\begin{tabularx}{\linewidth}{@{}cXlc@{}}
+\toprule
+Case & Location of both Type 1 targets & First centre distance & $B$ \\
+\midrule
+1 & Second formation & 3.5--4.0 km & 5 \\
+2 & Nearby first formation & 2.5--2.7 km & 12 \\
+3 & Distant first formation & 5.4--5.8 km & 12 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Distances are measured from the friendly formation centre.
+
+\end{document}
