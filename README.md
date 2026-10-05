@@ -1,6 +1,33 @@
 # Strike 우선순위 다중 드론 RL
 
-여러 고정익 드론이 어떤 표적을 먼저 타격할지 학습하는 2D point-mass 환경입니다. 임무 선택은 제거했으며 모든 드론은 항상 Strike를 수행합니다. 정책은 매초 드론별 `target_id`만 선택하고, 환경이 최신 추정 위치를 향한 160 km/h 접근과 교전 판정을 처리합니다.
+여러 드론이 표적을 탐색하고 작업 대상을 선택하는 2D point-mass 환경입니다.
+
+## v15와 현재 belief 모드
+
+| | v15 (`known`) | 현재 (`belief`) |
+|---|---|---|
+| 표적 정보 | 시작부터 표적 위치·타입을 앎 | 센서로 탐색하며 공유 belief를 갱신 |
+| 정책 선택 | 알려진 표적 ID | 미발견 탐색 구역 또는 발견된 개체의 belief ID |
+| 모델 | attention actor + graph Q | belief encoder를 공유하는 actor + graph Q |
+| 이동 | 기존 표적 접근 | Dubins 경로; 평가 시 구역 lawnmower 탐색 선택 가능 |
+
+두 모드는 환경과 모델 입력이 달라 체크포인트를 서로 바꿔 사용할 수 없습니다. 아래 상세 `Strike MDP` 설명은 `known` 모드 기준입니다.
+
+## 평가 실행
+
+```bash
+# 현재 belief 모델 (이 저장소의 학습 결과 경로)
+python -m pointmass_rl evaluate --mode belief \
+  --model runs/target_coma_belief_h18000/best.pt \
+  --episodes 10 --seed 10000 --out runs/eval_belief
+
+# v15 known 모델: your_v15_run을 해당 학습 디렉터리로 교체
+python -m pointmass_rl evaluate --mode known \
+  --config runs/your_v15_run/config.json --model runs/your_v15_run/best.pt \
+  --episodes 30 --seed 10000 --out runs/eval_v15
+```
+
+Belief 평가에 `--no-lawnmower`를 추가하면 구역 왕복 탐색을 끌 수 있습니다. Dubins 이동은 유지됩니다. 결과는 각 `--out`의 `summary.json`과 `replay.html`에서 확인합니다.
 
 ## 설치 및 실행
 
