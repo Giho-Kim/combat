@@ -456,11 +456,16 @@ def allocated_actions(model, worlds, schedules, deterministic=False):
 
 
 def evaluation_resolved_action(model, world, schedule, deterministic=True):
-    """Distance-priority rejection/reselection used only for evaluation."""
+    """Actor-score rejection/reselection used only for evaluation."""
     action, traces = allocated_actions(model, [world], [schedule], deterministic)
     trace = traces[0]
     targets = action['target'][0].copy()
     initial = targets.copy()
+    tensor_obs = torch.as_tensor(trace['obs'], dtype=torch.float32)
+    with torch.no_grad():
+        scores = (model.actor_logits(tensor_obs, targets=torch.as_tensor(initial[None]))
+                  if model.autoregressive else model.actor_logits(tensor_obs))
+    priority = scores[0].detach().cpu().numpy()
     available = model.available_actions(world)
     masks = trace['action_mask'][0].copy()
     locked = world.locked_targets()
@@ -474,7 +479,7 @@ def evaluation_resolved_action(model, world, schedule, deterministic=True):
                            int(world.target_life[target]))
             ranked = sorted(candidates, key=lambda agent: (
                 locked[agent] != target,
-                float(np.linalg.norm(world.pos[agent] - world.targets[target])), int(agent)))
+                -float(priority[agent, target]), int(agent)))
             rejected.extend(agent for agent in ranked[capacity:] if locked[agent] < 0)
         if not rejected:
             break
@@ -1149,7 +1154,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
             'uniform_agent_target_counts_random_majority_F1_iid_types'
             if config.randomize_counts and config.randomize_target_composition else 'random'),
         selection_allocation='direct_joint_action_no_rejection_or_reselection')
-    model.training_settings['evaluation_allocation'] = 'distance_priority_rejection_reselection'
+    model.training_settings['evaluation_allocation'] = 'actor_score_priority_rejection_reselection'
     model.training_settings['evaluation_modes'] = ['no_resolver', 'resolver']
     model.training_settings['best_evaluation_mode'] = 'resolver'
     model.training_settings['best_metric'] = best_metric
@@ -1292,7 +1297,7 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                 "agent_transitions": agent_transitions,
                 "eval_episodes": eval_episodes,
                 "eval_seed": eval_seed,
-                "evaluation_allocation": "distance_priority_rejection_reselection",
+                "evaluation_allocation": "actor_score_priority_rejection_reselection",
             }))
             if best_metric == 'suite_damage' and 'case1_damage' in task_evaluation:
                 progress_bar.write(f"Saved best checkpoint: {best_path} "
