@@ -422,6 +422,7 @@ class World:
         # fill an open life slot but never inherit an earlier arrival's progress.
         self.strike_participants = np.zeros((c.n_targets, self.n), dtype=bool)
         self.last_agent_terminated = np.zeros(self.n, dtype=bool)
+        self.last_damage_by_agent = np.zeros(self.n, dtype=float)
         self.initial_score = int(self.target_score[self.target_exists].sum())
         formation_one = self.target_exists & (self.target_formation == 0)
         self.formation_one_initial_score = int(self.target_score[formation_one].sum())
