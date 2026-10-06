@@ -79,6 +79,10 @@ def command_config(args):
 
 def train(args):
     c=command_config(args)
+    if args.model_based_advantage and (c.mode != 'known' or args.algorithm != 'target_coma'
+                                       or args.target_coma_critic != 'graph'
+                                       or args.target_coma_actor != 'attention'):
+        raise ValueError('--model-based-advantage requires known-mode v15 target_coma')
     if c.mode == 'belief':
         from .belief_training import command_train
         command_train(args, c)
@@ -141,7 +145,8 @@ def evaluate(args):
         from .belief_training import command_evaluate
         return command_evaluate(args, c)
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True);c.save(out/'config.json')
-    balanced=(c.n_targets==5 and c.min_targets==5 and not c.randomize_counts)
+    balanced=(c.n_targets==5 and c.min_targets==5 and not c.randomize_counts
+              and not c.randomize_target_composition)
     task_suite=evaluation_task_for_episode(c,0) is not None
     if task_suite and args.episodes%len(EVALUATION_TASKS):
         raise SystemExit(f'--episodes must be a multiple of {len(EVALUATION_TASKS)} so every task has the same count')
@@ -231,8 +236,11 @@ def main():
         help='COMA Q fitting epochs per rollout (default: 4 times --epochs); actor epochs unchanged')
     s.choices['train'].add_argument('--critic-minibatch-size', type=int, default=None)
     s.choices['train'].add_argument('--best-metric', choices=('case1', 'suite_damage'), default='case1')
-    s.choices['train'].add_argument('--lookahead-credit', type=float, default=0.,
+    model_credit=s.choices['train'].add_mutually_exclusive_group()
+    model_credit.add_argument('--lookahead-credit', type=float, default=0.,
         help='COMA auxiliary assignment-damage credit weight; model-assisted training only, no planner at evaluation')
+    model_credit.add_argument('--model-based-advantage', action='store_true',
+        help='Enable v15 model-assisted counterfactual actor credit with weight 1.0 (training only)')
     s.choices['train'].add_argument('--deadline-mask', action='store_true',
         help='Mask stationary targets that cannot be struck before horizon; saved in checkpoint and also used at evaluation')
     s.choices['train'].add_argument('--policy-clip', type=float, default=.2)
@@ -260,6 +268,8 @@ def main():
     if hasattr(a,'eval_interval') and a.eval_interval<0:p.error('--eval-interval must be nonnegative')
     if hasattr(a,'eval_episodes') and a.eval_episodes<=0:p.error('--eval-episodes must be positive')
     if a.command == 'train':
+        if a.model_based_advantage:
+            a.lookahead_credit = 1.0
         for key in ('critic_epochs', 'critic_minibatch_size'):
             if getattr(a, key) is not None and getattr(a, key) <= 0:
                 p.error(f'--{key.replace("_", "-")} must be positive')

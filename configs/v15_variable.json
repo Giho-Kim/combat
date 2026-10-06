@@ -1,0 +1,9 @@
+{
+  "mode": "known",
+  "n_agents": 10,
+  "min_agents": 5,
+  "n_targets": 10,
+  "min_targets": 5,
+  "randomize_counts": true,
+  "randomize_target_composition": true
+}

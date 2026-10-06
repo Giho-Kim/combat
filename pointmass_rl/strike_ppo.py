@@ -25,7 +25,8 @@ from .env import (DAMAGE_REWARD_RATE, EVALUATION_TASKS,
 
 def _uses_balanced_thresholds(config):
     return (config.n_targets == 5 and config.min_targets == 5
-            and not config.randomize_counts)
+            and not config.randomize_counts
+            and not config.randomize_target_composition)
 
 
 def _evaluation_threshold(config, episode):
@@ -1144,7 +1145,9 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
         commit_target=config.commit_target,
         training_distribution=('B12_mixture_with_uniform_B_distance_25_58'
             if training_b12_probability else 'uniform_B_5_8_9_11_12_distance_25_58'
-            if evaluation_task_for_episode(config, 0) is not None else 'random'),
+            if evaluation_task_for_episode(config, 0) is not None else
+            'uniform_agent_target_counts_random_majority_F1_iid_types'
+            if config.randomize_counts and config.randomize_target_composition else 'random'),
         selection_allocation='direct_joint_action_no_rejection_or_reselection')
     model.training_settings['evaluation_allocation'] = 'distance_priority_rejection_reselection'
     model.training_settings['evaluation_modes'] = ['no_resolver', 'resolver']

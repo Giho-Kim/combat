@@ -13,6 +13,12 @@
 
 두 모드는 환경과 모델 입력이 달라 체크포인트를 서로 바꿔 사용할 수 없습니다. 아래 상세 `Strike MDP` 설명은 `known` 모드 기준입니다.
 
+v15 가변 편제 학습은 `configs/v15_variable.json`을 사용합니다. 매 에피소드 드론·표적을 각각 5–10개에서 뽑고, 편제 1이 편제 2보다 많게 편제 수를 뽑으며, 표적 타입 1–3을 독립적으로 뽑습니다. `--model-based-advantage`는 기존 COMA 어드밴티지에 모델 기반 반사실 피해 예측을 가중치 1.0으로 더합니다. 세기는 대신 `--lookahead-credit`로 지정할 수 있습니다.
+
+```bash
+python -m pointmass_rl train --mode known --algorithm target_coma --config configs/v15_variable.json --model-based-advantage --steps 10000000 --out runs/target_coma_v15_variable_model_based --seed 7
+```
+
 ## 평가 실행
 
 ```bash

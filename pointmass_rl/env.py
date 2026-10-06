@@ -24,7 +24,8 @@ EVALUATION_TASKS = (
 
 def evaluation_task_for_episode(config, episode):
     if (config.horizon == 100 and config.n_targets == 5
-            and config.min_targets == 5 and not config.randomize_counts):
+            and config.min_targets == 5 and not config.randomize_counts
+            and not config.randomize_target_composition):
         return EVALUATION_TASKS[episode % len(EVALUATION_TASKS)]
     return None
 _TARGET_TYPES_BY_THRESHOLD = {
@@ -66,6 +67,7 @@ class Config:
     n_targets: int = 5
     min_targets: int = 5
     randomize_counts: bool = False
+    randomize_target_composition: bool = False
     horizon: int = 100
     dt: float = 1.0
     decision_interval: int = 1
@@ -132,6 +134,12 @@ class Config:
             raise ValueError("n_targets capacity must be 1..20")
         if not 1 <= self.min_targets <= self.n_targets:
             raise ValueError("min_targets must fit target capacity")
+        if type(self.randomize_target_composition) is not bool:
+            raise ValueError("randomize_target_composition must be a boolean")
+        if self.randomize_target_composition and self.mode != 'known':
+            raise ValueError("Random target composition currently requires known mode")
+        if self.randomize_target_composition and self.min_targets < 3:
+            raise ValueError("Random target composition needs at least three targets for two formations")
         if self.horizon < 2:
             raise ValueError("horizon must be at least 2")
         positive = ("dt", "size", "strike_speed", "sensor_range",
@@ -228,7 +236,8 @@ class World:
             if success_threshold is not None:
                 raise ValueError("Specify either evaluation_task or success_threshold")
             if (self.c.horizon != 100 or self.c.n_targets != 5
-                    or self.c.min_targets != 5 or self.c.randomize_counts):
+                    or self.c.min_targets != 5 or self.c.randomize_counts
+                    or self.c.randomize_target_composition):
                 raise ValueError("Evaluation tasks require five fixed targets and horizon 100")
         if (success_threshold is not None
                 and success_threshold not in SUCCESS_THRESHOLDS):
@@ -283,13 +292,15 @@ class World:
         target_ids = np.flatnonzero(self.target_exists)
         formation_count = min(2, len(target_ids))
         # Keep formation records in fixed contiguous state-space sections:
-        # formation 1 first (the larger half), then formation 2.  The default
-        # five-target scenario is therefore always [F1, F1, F1, F2, F2].
+        # formation 1 first, then formation 2. The optional varied scenario
+        # samples every split with nonempty formations and strictly more in F1.
         if formation_count == 2:
-            formation_one_count = (len(target_ids) + 1) // 2
+            formation_one_count = (
+                int(self.rng.integers(len(target_ids)//2 + 1, len(target_ids)))
+                if c.randomize_target_composition else (len(target_ids) + 1) // 2)
             self.target_formation[target_ids[formation_one_count:]] = 1
         balanced_five_target_case = (
-            len(target_ids) == 5
+            not c.randomize_target_composition and len(target_ids) == 5
             and np.count_nonzero(self.target_formation[target_ids] == 0) == 3)
         threshold = None
         if balanced_five_target_case:
@@ -368,8 +379,11 @@ class World:
             if success_threshold is not None:
                 raise ValueError(
                     "A fixed success_threshold requires the five-target 3+2 scenario")
-            type_pool = np.resize(np.array([1, 2, 3], dtype=int), len(target_ids))
-            self.rng.shuffle(type_pool)
+            if c.randomize_target_composition:
+                type_pool = self.rng.integers(1, 4, size=len(target_ids))
+            else:
+                type_pool = np.resize(np.array([1, 2, 3], dtype=int), len(target_ids))
+                self.rng.shuffle(type_pool)
         common_heading = self.motion_rng.uniform(0, 2 * np.pi)
         for j, point, typ in zip(target_ids, sampled_positions, type_pool):
             formation = self.target_formation[j]
