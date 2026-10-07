@@ -355,9 +355,9 @@ class ApproximateDPPolicy:
 
 
 class StrikeMAPPOPolicy:
-    def __init__(self, path, config, resolver=True):
+    def __init__(self, path, config, resolver=True, device='cpu'):
         from .strike_ppo import model_from_checkpoint
-        self.model = model_from_checkpoint(path, config)
+        self.model = model_from_checkpoint(path, config, device=device)
         self.model.eval()
         self.c = config
         self.resolver = resolver

@@ -48,6 +48,19 @@ def _validate_evaluation_episodes(config, episodes):
             "to represent every B case equally")
 
 
+def resolve_device(device='auto'):
+    if device == 'auto':
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    result = torch.device(device)
+    if result.type == 'cuda' and not torch.cuda.is_available():
+        raise ValueError('CUDA requested but unavailable; install CUDA-enabled PyTorch or use --device cpu')
+    return result
+
+
+def model_tensor(model, value, dtype=None):
+    return torch.as_tensor(value, dtype=dtype, device=next(model.parameters()).device)
+
+
 class ValueNorm(nn.Module):
     def __init__(self, beta=0.99999, epsilon=1e-5):
         super().__init__()
@@ -126,7 +139,7 @@ class StrikeActorCritic(nn.Module):
                                  previous_action_probabilities=previous_action_probabilities)
 
     def available_actions(self, world):
-        global_obs = torch.as_tensor(actor_observation(world, one_hot=self.one_hot_target_type), dtype=torch.float32)
+        global_obs = model_tensor(self, actor_observation(world, one_hot=self.one_hot_target_type), dtype=torch.float32)
         available = self.target_mask(global_obs).cpu().numpy()
         if getattr(self, 'training_settings', {}).get('deadline_mask', False):
             from .strike_lookahead import deadline_action_mask
@@ -437,9 +450,9 @@ def allocated_actions(model, worlds, schedules, deterministic=False):
     masks = np.stack([entry[0] for entry in scheduled])
     decisions = np.stack([entry[1] for entry in scheduled])
     active = np.stack([world.agent_active for world in worlds])
-    tensor_obs = torch.as_tensor(observations, dtype=torch.float32)
+    tensor_obs = model_tensor(model, observations, dtype=torch.float32)
     action, stats = model.act(tensor_obs, deterministic=deterministic,
-                              action_mask=torch.as_tensor(masks))
+                              action_mask=model_tensor(model, masks))
     targets = action['target']
     probabilities = (stats['probs'].detach().cpu().numpy().copy()
                      if 'probs' in stats else None)
@@ -461,9 +474,9 @@ def evaluation_resolved_action(model, world, schedule, deterministic=True):
     trace = traces[0]
     targets = action['target'][0].copy()
     initial = targets.copy()
-    tensor_obs = torch.as_tensor(trace['obs'], dtype=torch.float32)
+    tensor_obs = model_tensor(model, trace['obs'], dtype=torch.float32)
     with torch.no_grad():
-        scores = (model.actor_logits(tensor_obs, targets=torch.as_tensor(initial[None]))
+        scores = (model.actor_logits(tensor_obs, targets=model_tensor(model, initial[None]))
                   if model.autoregressive else model.actor_logits(tensor_obs))
     priority = scores[0].detach().cpu().numpy()
     available = model.available_actions(world)
@@ -497,8 +510,8 @@ def evaluation_resolved_action(model, world, schedule, deterministic=True):
             if agent not in movable:
                 sampling_mask[agent] = False
                 sampling_mask[agent, targets[agent]] = True
-        proposed, stats = model.act(torch.as_tensor(trace['obs']),
-            deterministic=deterministic, action_mask=torch.as_tensor(sampling_mask[None]))
+        proposed, stats = model.act(model_tensor(model, trace['obs']),
+            deterministic=deterministic, action_mask=model_tensor(model, sampling_mask[None]))
         targets[movable] = proposed['target'][0, movable]
         if probabilities is not None:
             probabilities[movable] = stats['probs'][0, movable].detach().cpu().numpy()
@@ -535,7 +548,7 @@ def checkpoint_payload(path):
     return payload
 
 
-def model_from_checkpoint(path, config):
+def model_from_checkpoint(path, config, device='cpu'):
     payload = checkpoint_payload(path)
     architecture = payload.get('architecture')
     if architecture in ('strike_mat_v1', 'strike_mat_v2', 'strike_mat_v3', 'strike_mat_v4'):
@@ -630,7 +643,7 @@ def model_from_checkpoint(path, config):
         model.architecture = architecture
         model.relative_actor_coordinates = False
     load_checkpoint(path, model)
-    return model
+    return model.to(resolve_device(device))
 
 
 def load_checkpoint(path, model):
@@ -781,7 +794,7 @@ def _coma_update(model, optimizers, batch, probabilities, epochs, minibatch_size
     settings = getattr(model, 'training_settings', {})
     width = settings.get('critic_minibatch_size') or minibatch_size or size
     for _ in range(settings.get('critic_epochs') or epochs):
-        order = torch.randperm(size)
+        order = torch.randperm(size, device=batch['state'].device)
         for start in range(0, size, width):
             indices = order[start:start + width]
             indices = indices[batch['critic_active'][indices]]
@@ -841,10 +854,10 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
                       else batch['decision'])
         actor_indices = torch.nonzero(actor_rows, as_tuple=False).flatten()
     else:
-        actor_indices = torch.arange(batch_size)
+        actor_indices = torch.arange(batch_size, device=batch['obs'].device)
     records = []
     for _ in range(epochs):
-        order = actor_indices[torch.randperm(len(actor_indices))]
+        order = actor_indices[torch.randperm(len(actor_indices), device=actor_indices.device)]
         for start in range(0, len(order), actor_minibatch_size):
             indices = order[start:start + actor_minibatch_size]
             sample = {key: batch[key][indices] for key in
@@ -878,7 +891,7 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
         if isinstance(model, StrikeCOMAActorCritic):
             continue  # Q was fitted before the fixed-advantage actor update.
         critic_minibatch_size = minibatch_size or critic_batch_size
-        critic_order = torch.randperm(critic_batch_size)
+        critic_order = torch.randperm(critic_batch_size, device=batch['state'].device)
         for start in range(0, critic_batch_size, critic_minibatch_size):
             indices = critic_order[start:start + critic_minibatch_size]
             sample = {key: batch[key][indices] for key in
@@ -1022,10 +1035,11 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
               best_metric='case1', lookahead_credit=0., deadline_mask=False,
               initial_checkpoint=None, actor_target_distances=False,
               training_b12_probability=0., actor_decision_minibatches=False,
-              target_coma_critic='graph', target_coma_actor='attention'):
+              target_coma_critic='graph', target_coma_actor='attention', device='auto'):
     from .env import World
     from .strike_guidance import progress_potential, avoidable_switches
     from .strike_lookahead import counterfactual_credit
+    device = resolve_device(device)
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.set_num_threads(1)
@@ -1103,7 +1117,10 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
     if initial_checkpoint is not None:
         # Weight warm-start, not an optimizer/RNG-exact training resume.
         load_checkpoint(initial_checkpoint, model)
-    model.training_settings = dict(n_envs=n_envs, rollout_steps=rollout_steps,
+    model.to(device)
+    if progress:
+        print(f'Training device: {device}', flush=True)
+    model.training_settings = dict(device=str(device), n_envs=n_envs, rollout_steps=rollout_steps,
         epochs=epochs, minibatch_size=minibatch_size, learning_rate=learning_rate,
         critic_learning_rate=learning_rate, adam_epsilon=1e-5, hidden=64,
         initial_checkpoint=str(initial_checkpoint) if initial_checkpoint is not None else None,
@@ -1355,9 +1372,9 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                 if isinstance(model, StrikeCOMAActorCritic):
                     joint = np.where(np.stack([w.agent_active for w in worlds]),
                                      action['target'], 0)
-                    value = model.target_joint_q(torch.as_tensor(state), torch.as_tensor(joint))
+                    value = model.target_joint_q(model_tensor(model, state), model_tensor(model, joint))
                 else:
-                    value = model.values(torch.as_tensor(state, dtype=torch.float32))
+                    value = model.values(model_tensor(model, state, dtype=torch.float32))
             # Allocation/scheduling is complete before filtering the loss.
             # GAE and critic retain every physical transition and its reward.
             if actor_samples == 'events':
@@ -1387,11 +1404,11 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
             with torch.no_grad():
                 next_state = np.stack([_model_critic_state(model, world, schedule)
                                        for world, schedule in zip(worlds, schedules)])
-                next_value = (torch.zeros(n_envs) if isinstance(model, StrikeCOMAActorCritic)
-                              else model.values(torch.as_tensor(next_state, dtype=torch.float32)))
+                next_value = (torch.zeros(n_envs, device=device) if isinstance(model, StrikeCOMAActorCritic)
+                              else model.values(model_tensor(model, next_state, dtype=torch.float32)))
             states.append(state)
-            values.append(value.numpy())
-            next_values.append(next_value.numpy())
+            values.append(value.detach().cpu().numpy())
+            next_values.append(next_value.detach().cpu().numpy())
             rewards.append(step_rewards)
             dones.append(step_dones)
             active.append(active_before)
@@ -1412,8 +1429,8 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                 boundary_action, _ = allocated_actions(model, worlds, deepcopy(schedules))
                 boundary_joint = np.where(np.stack([w.agent_active for w in worlds]),
                                           boundary_action['target'], 0)
-                boundary_q = model.target_joint_q(torch.as_tensor(boundary_state),
-                                                   torch.as_tensor(boundary_joint)).numpy()
+                boundary_q = model.target_joint_q(model_tensor(model, boundary_state),
+                                                   model_tensor(model, boundary_joint)).detach().cpu().numpy()
             raw_values = values_array
             raw_next_values = np.concatenate((values_array[1:], boundary_q[None]), axis=0)
             team_returns = _td_lambda_returns(
@@ -1424,8 +1441,8 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                 traces[0]['probs'] for traces in allocation_records])
         else:
             with torch.no_grad():
-                raw_values = model.value_normalizer.denormalize(torch.as_tensor(values_array)).numpy()
-                raw_next_values = model.value_normalizer.denormalize(torch.as_tensor(next_values_array)).numpy()
+                raw_values = model.value_normalizer.denormalize(model_tensor(model, values_array)).cpu().numpy()
+                raw_next_values = model.value_normalizer.denormalize(model_tensor(model, next_values_array)).cpu().numpy()
             team_advantage, team_returns = _advantages(
                 np.asarray(rewards, dtype=np.float32), raw_values, raw_next_values,
                 np.asarray(dones, dtype=np.float32),
@@ -1446,9 +1463,10 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
         if lookahead_credit:
             tensors['lookahead_advantage'] = torch.as_tensor(
                 np.asarray(lookahead_advantages).reshape(-1), dtype=torch.float32)
+        tensors = {key: value.to(device) for key, value in tensors.items()}
         if isinstance(model, StrikeCOMAActorCritic):
             probabilities = torch.as_tensor(old_probabilities.reshape(
-                -1, config.n_agents, config.n_targets), dtype=torch.float32)
+                -1, config.n_agents, config.n_targets), dtype=torch.float32, device=device)
             diagnostics = _coma_update(model, optimizers, tensors, probabilities, epochs, minibatch_size)
         else:
             diagnostics = _ppo_update(model, optimizers, tensors, epochs, minibatch_size)

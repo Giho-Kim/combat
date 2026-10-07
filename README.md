@@ -21,6 +21,26 @@ v15 가변 편제 학습은 `configs/v15_variable.json`을 사용합니다. 매 
 python -m pointmass_rl train --mode known --algorithm target_coma --config configs/v15_variable.json --model-based-advantage --steps 10000000 --out runs/target_coma_v15_variable_model_based --seed 7
 ```
 
+## GPU 학습 (v15)
+
+`pointmass-rl` 환경에 CUDA 지원 PyTorch를 설치합니다.
+
+```bash
+conda activate pointmass-rl
+python -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+Known 모드의 학습·평가는 기본 `--device auto`로 CUDA가 있으면 GPU를 사용합니다. `--device cuda`로 GPU를 지정하거나 `--device cpu`로 CPU를 지정할 수 있습니다. Actor·critic 추론과 학습은 GPU에서, 환경 step과 모델 기반 피해 계산은 CPU에서 수행합니다. Belief 모드는 현재 CPU를 사용합니다.
+
+성공한 5×5 실험의 MDP·학습 설정을 유지하고, 드론·표적 수를 각각 5–10개로 뽑고 편제·타입을 무작위로 구성하는 실행 명령입니다.
+
+```bash
+DEVICE=cuda bash scripts/train_target_coma_variable.sh basic
+DEVICE=cuda bash scripts/train_target_coma_variable.sh model_based
+```
+
+GPU에서 저장한 체크포인트도 CPU에서 평가할 수 있습니다. 평가 명령에도 `--device cuda` 또는 `--device cpu`를 추가할 수 있습니다.
+
 ## 평가 실행
 
 ```bash

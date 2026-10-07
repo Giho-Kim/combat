@@ -84,6 +84,8 @@ def train(args):
                                        or args.target_coma_actor != 'attention'):
         raise ValueError('--model-based-advantage requires known-mode v15 target_coma')
     if c.mode == 'belief':
+        if getattr(args, 'device', 'auto') == 'cuda':
+            raise ValueError('--device cuda currently supports known mode')
         from .belief_training import command_train
         command_train(args, c)
         print(f'Saved {Path(args.out) / "belief_target_coma.pt"}', flush=True)
@@ -109,7 +111,7 @@ def train(args):
         deadline_mask=args.deadline_mask,
         eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
         best_path=out/'best.pt',latest_path=out/'latest.pt',checkpoint_dir=out,
-        n_envs=args.n_envs,diagnostics_path=out/'training_updates.csv',algorithm=args.algorithm)
+        n_envs=args.n_envs,diagnostics_path=out/'training_updates.csv',algorithm=args.algorithm,device=args.device)
     metadata=dict(seed=args.seed,requested_agent_transitions=args.steps,actual_agent_transitions=actual,
                   eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
                   evaluation_tasks=list(EVALUATION_TASKS) if evaluation_task_for_episode(c,0) else None,
@@ -142,6 +144,8 @@ def train(args):
 def evaluate(args):
     c=command_config(args)
     if c.mode == 'belief':
+        if getattr(args, 'device', 'auto') == 'cuda':
+            raise ValueError('--device cuda currently supports known mode')
         from .belief_training import command_evaluate
         return command_evaluate(args, c)
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True);c.save(out/'config.json')
@@ -155,9 +159,9 @@ def evaluate(args):
     if args.model:
         import torch
         torch.set_num_threads(1)
-    learned = StrikeMAPPOPolicy(args.model, c) if args.model else None
+    learned = StrikeMAPPOPolicy(args.model, c, device=args.device) if args.model else None
     learned_name = learned.model.algorithm if learned else None
-    learned_policies = ({f'{learned_name}_no_resolver': StrikeMAPPOPolicy(args.model, c, resolver=False),
+    learned_policies = ({f'{learned_name}_no_resolver': StrikeMAPPOPolicy(args.model, c, resolver=False, device=args.device),
                          f'{learned_name}_resolver': learned} if learned else {})
     names=['nearest','type_priority','approximate_dp']+list(learned_policies);rows=[];runs={};summaries={};task_success={};task_damage={};task_return={};task_discounted_return={};decisions=[]
     record_episode = args.episodes - 1
@@ -252,6 +256,8 @@ def main():
     s.choices['train'].add_argument('--epochs', type=int, default=10,
         help='PPO epochs per collected batch (default: 10)')
     for command in ('train', 'evaluate'):
+        s.choices[command].add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto',
+            help='Known-mode model device; auto selects CUDA when available')
         s.choices[command].add_argument('--mode', choices=('known', 'belief'), default=None,
             help='known: historical fully observed task; belief: sensor-driven multi-object belief task')
         s.choices[command].add_argument('--commit-target', action='store_true',

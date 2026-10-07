@@ -16,7 +16,7 @@ if [[ -e "$out/config.json" ]]; then
   exit 1
 fi
 exec "${PYTHON_BIN:-python}" -m pointmass_rl train \
-  --mode known --algorithm target_coma --config configs/v15_variable.json \
+  --device "${DEVICE:-auto}" --mode known --algorithm target_coma --config configs/v15_variable.json \
   --target-coma-critic graph --target-coma-actor attention \
   --steps "$steps" --out "$out" --seed "${SEED:-7}" \
   --gamma 1.0 --gae-lambda 0.97 --n-envs 32 --rollout-steps 200 \

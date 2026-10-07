@@ -14,7 +14,7 @@ if [[ -e "$out/config.json" ]]; then
 fi
 
 exec "${PYTHON_BIN:-python}" -m pointmass_rl train \
-  --mode known \
+  --device "${DEVICE:-auto}" --mode known \
   --algorithm target_coma \
   --target-coma-critic "${CRITIC:-graph}" \
   --target-coma-actor "${ACTOR:-attention}" \
