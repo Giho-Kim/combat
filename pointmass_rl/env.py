@@ -91,11 +91,8 @@ class Config:
     strike_range: float = 0.05
     strike_probability: float = 1.0
     strike_steps_per_life: int = 10
-    penalty_time: float = 0.1
-    discount_gamma: float = 0.99
-    gae_lambda: float = 0.95
-    mission_failure_penalty: float = 100.0
-    mission_success_reward: float = 100.0
+    discount_gamma: float = 1.0
+    gae_lambda: float = 0.97
     mode: str = 'known'
     belief_grid: int = 4
     belief_subcells: int = 8
@@ -160,9 +157,8 @@ class Config:
             raise ValueError("sensor_fov_deg must be in (0, 360]")
         if not 0 < self.formation_two_progress < 1:
             raise ValueError("formation_two_progress must be in (0, 1)")
-        if min(self.position_noise, self.initial_intel_noise, self.penalty_time,
-               self.mission_failure_penalty, self.mission_success_reward) < 0:
-            raise ValueError("noise, drain and penalties must be nonnegative")
+        if min(self.position_noise, self.initial_intel_noise) < 0:
+            raise ValueError("noise scales must be nonnegative")
         if not 0 < self.discount_gamma <= 1:
             raise ValueError("discount_gamma must be in (0, 1]")
         if not 0 < self.gae_lambda <= 1:
@@ -180,6 +176,8 @@ class Config:
         # Older saved runs contain reward coefficients that no longer apply.
         data.pop("damage_value_reward_scale", None)
         data.pop("damage_credit_scale", None)
+        for obsolete in ("penalty_time", "mission_failure_penalty", "mission_success_reward"):
+            data.pop(obsolete, None)
         return cls(**data)
 
     def save(self, path):
@@ -592,6 +590,7 @@ class World:
         targets = self.committed_targets(proposed_targets)
         c = self.c
         reward = np.zeros(self.n, dtype=float)
+        self.last_damage_by_agent.fill(0.0)
         step_active = self.agent_active.copy()
         agent_count = int(step_active.sum())
         old_pos = self.pos.copy()
@@ -610,22 +609,11 @@ class World:
                 self.heading[i] = np.arctan2(moved[1], moved[0])
         self.vel = (self.pos - old_pos) / c.dt
         self.t += 1
-        score_before = self.score
         # Resolve an approach completed during this decision interval before
         # advancing the target to the next interval.
         self._resolve_strikes(targets)
         self.target_assignment[~self.target_exists | self.destroyed] = False
-        # B is fixed by formation 1's initial type/life composition. D is
-        # cumulative type-weighted life damage across both formations.
-        margin = ((self.formation_one_initial_score - self.score)
-                  / max(1, self.formation_one_initial_score))
-        team_step_reward = -c.penalty_time * margin
-        if score_before < self.formation_one_initial_score <= self.score:
-            team_step_reward += c.mission_success_reward
-        failure_end = (self.t >= c.horizon
-                       and self.score < self.formation_one_initial_score)
-        if failure_end:
-            team_step_reward -= c.mission_failure_penalty
+        team_step_reward = DAMAGE_REWARD_RATE * self.last_damage_by_agent.sum()
         if agent_count:
             reward[step_active] += team_step_reward / agent_count
         else:

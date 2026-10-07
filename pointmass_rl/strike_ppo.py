@@ -698,7 +698,7 @@ def actor_observation(world, relative=True, one_hot=True,
     return np.concatenate((state, identity), axis=1)
 
 
-def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.95):
+def _advantages(reward, value, next_value, done, gamma=.99, gae_lambda=.97):
     advantage = np.zeros_like(reward)
     carry = np.zeros(reward.shape[1], dtype=np.float32)
     for t in reversed(range(len(reward))):
@@ -903,25 +903,10 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
             for key in keys}
 
 
-def _interquartile_mean(values):
-    values = np.sort(np.asarray(values, dtype=float))
-    if not len(values):
-        return float('nan')
-    lower, upper = 0.25 * len(values), 0.75 * len(values)
-    weights = np.array([
-        max(0.0, min(i + 1, upper) - max(i, lower))
-        for i in range(len(values))])
-    return float(np.sum(values * weights) / np.sum(weights))
-
-
 def _summarize(rows):
     keys = ("team_return", "discounted_team_return", "mission_success",
             "score", "baseline_score", "destroyed_fraction", "score_auc", "steps")
-    summary = {
-        key: (float(np.mean([row[key] for row in rows]))
-              if key == 'mission_success'
-              else _interquartile_mean([row[key] for row in rows]))
-        for key in keys}
+    summary = {key: float(np.mean([row[key] for row in rows])) for key in keys}
     for baseline in sorted({int(row["baseline_score"]) for row in rows}):
         group = [row for row in rows if int(row["baseline_score"]) == baseline]
         summary[f"success_b{baseline}"] = float(np.mean(
@@ -1283,10 +1268,20 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                 'best_case1_discounted_return':
                     task_evaluation['case1_discounted_return'],
             }
-        else:
-            candidate_key = (mappo_return, mappo_success)
+        elif config.randomize_target_composition:
+            # Some sampled scenarios require more one-use drones than exist,
+            # so success is not a useful primary checkpoint criterion.
+            candidate_key = (mappo_return, mappo_discounted_return)
             best_metadata = {
-                'best_metric': 'interquartile_mean_team_return',
+                'best_metric': 'mean_team_return_then_discounted_return',
+                'best_value': mappo_return,
+                'best_discounted_value': mappo_discounted_return,
+                'best_success': mappo_success,
+            }
+        else:
+            candidate_key = (mappo_success, mappo_return)
+            best_metadata = {
+                'best_metric': 'mean_success_then_mean_team_return',
                 'best_success': mappo_success,
                 'best_value': mappo_return,
                 'best_discounted_value': mappo_discounted_return,
@@ -1308,6 +1303,11 @@ def train_mappo(config, total_agent_transitions, seed=7, rollout_steps=200, epoc
                     f"(case1_D={task_evaluation['case1_damage']:.3f}, "
                     f"case1_discounted_return="
                     f"{task_evaluation['case1_discounted_return']:.3f})")
+            elif config.randomize_target_composition:
+                progress_bar.write(
+                    f"Saved best checkpoint: {best_path} "
+                    f"(return={mappo_return:.3f}, "
+                    f"discounted_return={mappo_discounted_return:.3f})")
             else:
                 progress_bar.write(
                     f"Saved best checkpoint: {best_path} "

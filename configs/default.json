@@ -1,11 +1,12 @@
 {
-  "n_agents": 6,
-  "min_agents": 6,
+  "n_agents": 5,
+  "min_agents": 5,
   "n_targets": 5,
   "min_targets": 5,
   "randomize_counts": false,
-  "horizon": 200,
+  "horizon": 100,
   "dt": 1.0,
+  "decision_interval": 1,
   "size": 100.0,
   "strike_speed": 0.4444444444444444,
   "sensor_range": 15.0,
@@ -16,7 +17,7 @@
   "friendly_formation_radius": 1.0,
   "target_formation_radius": 6.5,
   "target_member_min_spacing": 3.0,
-  "target_motion_scale": 0.05,
+  "target_motion_scale": 0.0,
   "formation_separation": 35.0,
   "formation_distance_spread": 5.0,
   "formation_two_progress": 0.55,
@@ -24,9 +25,6 @@
   "strike_range": 0.05,
   "strike_probability": 1.0,
   "strike_steps_per_life": 10,
-  "penalty_time": 0.1,
-  "discount_gamma": 0.99,
-  "gae_lambda": 0.95,
-  "mission_failure_penalty": 100.0,
-  "mission_success_reward": 100.0
+  "discount_gamma": 1.0,
+  "gae_lambda": 0.97
 }
