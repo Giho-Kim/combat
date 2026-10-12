@@ -1,0 +1,31 @@
+{
+  "mode": "belief",
+  "seed": 10001,
+  "episodes": 1,
+  "movement": "dubins",
+  "lawnmower": false,
+  "distribution": "world.reset(seed)",
+  "summaries": {
+    "random": {
+      "team_return": 0.0,
+      "discounted_team_return": 0.0,
+      "mission_success": 0.0,
+      "discovery_fraction": 0.4,
+      "discovered_objects": 2.0
+    },
+    "nearest": {
+      "team_return": 0.0,
+      "discounted_team_return": 0.0,
+      "mission_success": 0.0,
+      "discovery_fraction": 0.0,
+      "discovered_objects": 0.0
+    },
+    "type_priority": {
+      "team_return": 0.0,
+      "discounted_team_return": 0.0,
+      "mission_success": 0.0,
+      "discovery_fraction": 0.0,
+      "discovered_objects": 0.0
+    }
+  }
+}

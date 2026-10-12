@@ -1,128 +1,75 @@
-# Strike 우선순위 다중 드론 RL
+# Target Allocation
 
-여러 드론이 표적을 탐색하고 작업 대상을 선택하는 2D point-mass 환경입니다.
+두 버전을 제공합니다.
 
-## v15와 현재 belief 모드
+| 버전 | 입력과 행동 |
+|---|---|
+| **Target Allocation** | 표적 위치·타입·life를 알고 드론별로 표적을 선택합니다. |
+| **Belief Target Allocation** | 보고 정보와 센서 관측으로 belief를 갱신하며, 탐색 후보와 발견된 표적 중에서 선택합니다. |
 
-| | v15 (`known`) | 현재 (`belief`) |
-|---|---|---|
-| 표적 정보 | 시작부터 표적 위치·타입을 앎 | 센서로 탐색하며 공유 belief를 갱신 |
-| 정책 선택 | 알려진 표적 ID | 미발견 탐색 구역 또는 발견된 개체의 belief ID |
-| 모델 | attention actor + graph Q | belief encoder를 공유하는 actor + graph Q |
-| 이동 | 기존 표적 접근 | Dubins 경로; 평가 시 구역 lawnmower 탐색 선택 가능 |
-
-두 모드는 환경과 모델 입력이 달라 체크포인트를 서로 바꿔 사용할 수 없습니다. 아래 상세 `Strike MDP` 설명은 `known` 모드 기준입니다.
-
-v15 known 평가의 resolver는 같은 표적 정원을 넘긴 드론 중 액터의 해당 표적 점수가 높은 드론을 남기고 나머지를 재선택시킵니다. 이미 처리 중인 드론은 우선 유지합니다. 학습 rollout은 resolver를 사용하지 않습니다.
-
-v15 가변 편제 학습은 `configs/v15_variable.json`을 사용합니다. 매 에피소드 드론·표적을 각각 5–10개에서 뽑고, 편제 1이 편제 2보다 많게 편제 수를 뽑으며, 표적 타입 1–3을 독립적으로 뽑습니다. `--model-based-advantage`는 기존 COMA 어드밴티지에 모델 기반 반사실 피해 예측을 가중치 1.0으로 더합니다. 세기는 대신 `--lookahead-credit`로 지정할 수 있습니다.
-
-```bash
-python -m pointmass_rl train --mode known --algorithm target_coma --config configs/v15_variable.json --model-based-advantage --steps 10000000 --out runs/target_coma_v15_variable_model_based --seed 7
-```
-
-## GPU 학습 (v15)
-
-`pointmass-rl` 환경에 CUDA 지원 PyTorch를 설치합니다.
+## 설치
 
 ```bash
 conda activate pointmass-rl
-python -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -e .
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
 ```
 
-Known 모드의 학습·평가는 기본 `--device auto`로 CUDA가 있으면 GPU를 사용합니다. `--device cuda`로 GPU를 지정하거나 `--device cpu`로 CPU를 지정할 수 있습니다. Actor·critic 추론과 학습은 GPU에서, 환경 step과 모델 기반 피해 계산은 CPU에서 수행합니다. Belief 모드는 현재 CPU를 사용합니다.
+Target Allocation은 `--device auto`로 CUDA가 있으면 GPU를 사용합니다. 환경 시뮬레이션은 CPU에서 실행하며, Belief Target Allocation은 CPU를 사용합니다.
 
-성공한 5×5 실험의 MDP·학습 설정을 유지하고, 드론·표적 수를 각각 5–10개로 뽑고 편제·타입을 무작위로 구성하는 실행 명령입니다.
+## Target Allocation
+
+Actor는 드론–후보 표적 쌍마다 동료 정보를 조회하는 peer attention을 두 번 적용하고 후보별 점수를 출력합니다. Critic은 드론–표적 관계를 양방향으로 전달하는 graph network이며, 공동 행동의 Q값으로 counterfactual advantage를 계산합니다. 드론·표적 수가 달라도 같은 가중치를 사용합니다. 평가에서는 score resolver로 표적의 남은 수용량에 맞춰 선택을 조정합니다.
+
+`configs/target_allocation_variable.json`은 드론과 표적을 각각 5–10개로 무작위 배치하고, 타입·편제 구성도 무작위로 정합니다. 편제 1의 표적 수가 편제 2보다 많습니다. `configs/five_agents.json`은 같은 MDP의 고정 5×5 설정입니다. 보상은 제거한 표적 가치이며, episode 길이 100, gamma 1.0, GAE lambda 0.97입니다.
 
 ```bash
-DEVICE=cuda bash scripts/train_target_coma_variable.sh basic
-DEVICE=cuda bash scripts/train_target_coma_variable.sh model_based
+bash scripts/train_target_allocation.sh basic 10000000 runs/target_allocation_basic
 ```
 
-GPU에서 저장한 체크포인트도 CPU에서 평가할 수 있습니다. 평가 명령에도 `--device cuda` 또는 `--device cpu`를 추가할 수 있습니다.
+기본 학습 설정은 seed 7, 환경 32개, rollout 200, actor epochs 10, critic epochs 40, 각 minibatch 256입니다. 평가는 100,000 transition마다 같은 seed 10000의 30개 episode로 실행합니다.
 
-## 평가 실행
+모델 기반 advantage를 사용하는 학습:
 
 ```bash
-# 현재 belief 모델 (이 저장소의 학습 결과 경로)
-python -m pointmass_rl evaluate --mode belief \
-  --model runs/target_coma_belief_h18000/best.pt \
-  --episodes 10 --seed 10000 --out runs/eval_belief
+bash scripts/train_target_allocation.sh model_based 10000000 runs/target_allocation_model_based
+```
 
-# v15 known 모델: your_v15_run을 해당 학습 디렉터리로 교체
+고정 5×5 학습은 앞 명령에 `CONFIG=configs/five_agents.json`을 붙입니다. 기존 Target Allocation 체크포인트를 그대로 불러올 수 있으며, `--initial-checkpoint`는 가중치부터 새 학습을 시작합니다.
+
+```bash
 python -m pointmass_rl evaluate --mode known \
-  --config runs/your_v15_run/config.json --model runs/your_v15_run/best.pt \
-  --episodes 30 --seed 10000 --out runs/eval_v15
+  --config configs/target_allocation_variable.json --model runs/target_allocation_basic/best.pt \
+  --episodes 30 --seed 10000 --out runs/eval_target_allocation
 ```
 
-Belief 평가에 `--no-lawnmower`를 추가하면 구역 왕복 탐색을 끌 수 있습니다. Dubins 이동은 유지됩니다. 결과는 각 `--out`의 `summary.json`과 `replay.html`에서 확인합니다.
+평가 결과는 `episodes.csv`, `summary.json`, `comparison.png`, `replay.html`에 저장합니다. 학습 중 평가는 `training_evaluations.csv`에 저장합니다.
 
-## 설치 및 실행
+## Belief Target Allocation
 
-Python 3.10–3.12를 권장합니다. Conda 환경을 사용합니다.
+초기 보고 표적마다 위치 Gaussian과 알려진 타입을 둡니다. 전역 탐색 belief는 이 Gaussian들의 합과 총질량 1의 기본 uniform 배경으로 구성됩니다. 배경 타입 prior는 각 타입 1/3이며 실제 미발견 표적 수를 참조하지 않습니다.
+
+매 스텝 센서 관측을 반영합니다. 미검출 위치에는 `1 − 탐지 확률`을 곱하고, 보고 Gaussian의 남은 질량·평균·공분산을 갱신합니다. 배경에서 줄어든 질량은 가까운 덜 관측된 곳으로 재분배하며 총질량과 타입 prior를 유지합니다. 배경은 연속 Gaussian 기저로 표현합니다.
+
+새 발견은 위치·타입으로 보고 Gaussian과 배경의 가능성을 비교합니다. 보고 Gaussian에 가장 잘 맞으면 해당 성분 하나를 제거합니다. 발견된 표적은 정확한 위치·타입·life를 가진 개별 선택 후보가 됩니다. 재관측은 Gaussian을 추가로 제거하지 않으며, 제거한 보고 질량을 배경에 더하지 않습니다.
+
+설정은 `configs/belief.json`입니다. 맵은 10×10 km, 표적 배치와 탐색 belief 영역은 안쪽 8×8 km입니다. 센서는 전방 80도·500 m이며, 실제 검출과 belief 갱신에 같은 위치별 탐지 확률을 사용합니다. 이동은 Dubins 경로를 따릅니다. 현재 학습 액션의 탐색 후보는 16개 영역이고, 영역별 질량·타입 비율·위치 평균·공분산을 요약합니다. 화면의 격자는 표시와 수치적분용입니다.
 
 ```bash
-conda create -n pointmass-rl python=3.11 -y
-conda activate pointmass-rl
-python -m pip install -e ".[rl]"
-python -m unittest discover -s tests -v
-python -m pointmass_rl train --config configs/default.json --steps 200000 --seed 7 --eval-interval 10000 --eval-episodes 5 --out runs/train
-python -m pointmass_rl evaluate --config configs/default.json --model runs/train/strike_mappo.pt --episodes 30 --out runs/eval
+bash scripts/train_belief_target_allocation.sh 10000000 runs/belief_target_allocation
+python -m pointmass_rl evaluate --mode belief \
+  --model runs/belief_target_allocation/best.pt \
+  --episodes 10 --seed 10000 --out runs/eval_belief_target_allocation
 ```
 
-기본 장기 학습(1,000만 transition)과 평가는 각각 다음 스크립트로 실행할 수 있습니다.
+Belief 학습은 seed 7, 환경 8개, rollout 64, actor·critic epochs 4, minibatch 32입니다. Replay에서 belief 변화와 발견된 표적을 볼 수 있으며 실제 표적 위치는 토글로 확인합니다. `--no-lawnmower`는 평가의 lawnmower 탐색을 끄고 Dubins 이동을 유지합니다.
+
+### Polygon 탐색 데모
+
+데모는 같은 belief에서 사다리꼴 polygon 후보를 생성하고, 배정된 polygon을 100 m 간격 lawnmower와 Dubins 경로로 탐색합니다. 탐색 중 polygon은 유지하고 나머지 후보를 갱신합니다. 발견 후 표적 선택·처리·드론 consume까지 포함합니다.
 
 ```bash
-./scripts/train.sh
-./scripts/evaluate.sh runs/train_10m/best.pt
+python scripts/compare_belief_heuristics.py
 ```
 
-## Strike MDP
-
-행동은 하나뿐입니다. 접근 중에는 매 step 표적을 다시 선택할 수 있습니다. 실제 타격 참여자로 확정된 뒤에는 10스텝 타격 행동이 끝날 때까지 고정되며, 타격을 완료한 드론은 즉시 환경에서 제거됩니다. 에피소드는 성공·전멸·전 표적 파괴와 무관하게 고정 horizon(기본 200 step)까지 진행합니다.
-
-```python
-{"target": int[n_agents]}
-```
-
-각 드론의 관측에는 정규화된 남은 시간·현재 선택 표적·자신이 참여 중인 타격 진행도, 모든 생존 표적의 정확한 현재 상대 위치·타입·life가 포함됩니다. 센서 범위·FoV·관측 오차·기억은 적용하지 않습니다. 제거된 드론 슬롯은 0으로 패딩되며 이후 행동, 관측, 보상과 PPO loss에서 제외됩니다.
-
-`B`는 편제 1의 초기 타입·life 가치 합이고, `D`는 편제 1·2 전체에서 지금까지 감소시킨 타입별 life 가치의 누적합입니다. 타입 1 life는 2.5, 타입 2는 2, 타입 3은 1의 가치를 가집니다. 매 step 팀 보상은 `-penalty_time × (B-D)/B`이며 `max`로 자르지 않습니다. `D=B`이면 시간 보상이 0이고 임무 성공이며, `D>B`이면 이후 보상이 양수가 됩니다. 아군이 전멸해도 보상을 미리 당겨 지급하거나 조기 종료하지 않고 고정 horizon까지 진행합니다.
-
-`D`가 처음 `B`에 도달하거나 넘는 step에는 일회성 팀 성공 보상 `+mission_success_reward`를 추가합니다. 기본값은 `+100`입니다. horizon 도달 시 `D<B`이면 임무 실패로 판정해 팀 보상 `-mission_failure_penalty`를 추가합니다. 기본값은 `-100`입니다.
-
-학습 알고리즘은 CTDE Strike MAPPO입니다. 공유 actor는 각 드론의 local observation에서 독립적으로 표적별 logit을 출력하고 local action mask 안에서 target을 선택합니다. 같은 표적을 동시에 고른 경우에도 environment가 strike range, 거리, 타입별 참여 상한으로 실제 participant를 결정합니다. PPO에는 실제 선택 때 사용한 local mask와 log-probability를 저장하므로 update도 같은 분포를 사용합니다. centralized critic은 joint observation과 타격 진행도로 공통 baseline을 추정합니다. 소진 전 선택에는 에피소드 종료까지의 팀 보상을 반영하며, 소진 이후 슬롯은 PPO loss에서 제외합니다.
-
-환경·평가·PPO는 하나의 team reward를 사용합니다. team reward는 해당 step 시작 시 활성 드론에게 균등 분배되며, `team_return`은 그 합을 에피소드 동안 누적한 값입니다. 별도의 damage shaping은 사용하지 않습니다.
-
-학습 중에는 `--eval-interval` agent transition마다 `--eval-seed`부터 시작하는 동일한 고정 평가 시나리오에서 random, heuristic, deterministic MAPPO를 모두 실행합니다. 성공률은 전체 평가 에피소드의 raw mean으로, 나머지 지표는 중앙 50% IQM으로 출력하고 `training_evaluations.csv`에 기록합니다. `--eval-interval 0`으로 중간 평가를 끌 수 있습니다.
-
-`best.pt`는 MAPPO의 IQM team return이 갱신될 때 저장합니다. 학습 종료 시점 모델은 별도로 `strike_mappo.pt`에 저장됩니다.
-
-`latest.pt`는 최고 성능 갱신 여부와 관계없이 매 평가 시점과 학습 종료 시 저장합니다. `--eval-interval 0`이면 종료 시에만 저장합니다. 모델 가중치 체크포인트이며 optimizer를 포함한 학습 재개 파일은 아닙니다.
-
-Critic은 joint observation에 표적별 `strike_progress / strike_steps_per_life`와 reward margin을 추가로 받습니다. 기본 관측과 actor 입력은 드론당 24차원입니다. critic은 150차원 팀 상태를 받습니다. 체크포인트 구조는 `strike_mappo_v16`이며 이전 모델은 재학습해야 합니다.
-
-아군은 6대입니다. 성공 여부는 전체 섬멸이 아니라 모든 편제의 누적 섬멸값 `D`가 편제 1 초기 구성으로 정한 `B` 이상인지로 판정합니다. 가능한 최대 `B=12`에 대해 6대의 최대 획득값은 `14`이므로 기본 시나리오는 모두 성공 가능합니다.
-
-5대 ablation은 `configs/five_agents.json`으로 별도 실행할 수 있습니다. 이때 최대 획득값은 `D_max=12`이므로 `B=12`인 구성도 `D>=B`를 만족할 수 있습니다. 6대 기본 설정과 체크포인트 입력 차원이 다르므로 5대 모델은 별도로 학습해야 합니다.
-
-## 시나리오
-
-- 기본 맵 `100 × 100`은 `10 km × 10 km`, 한 step은 1초이고 제한시간은 200 step입니다.
-- 아군과 표적 편대 중심은 기본 35–40 좌표 단위(3.5–4 km) 거리에서 시작합니다.
-- 기본 시나리오는 매 에피소드 아군 드론 6대와 표적 5대로 수를 고정합니다. 위치와 나머지 상태는 seed에 따라 바뀝니다.
-- 표적은 두 편대로 균등 분할됩니다. 편제 2는 아군에서 편제 1로 향하는 경로의 55% 지점에서 측면으로 800 m 빗겨 배치됩니다. 각 편대 반경은 650 m이고 표적 간 최소 거리는 300 m입니다.
-- 표적 state-space의 앞 3개 슬롯은 항상 편제 1, 뒤 2개 슬롯은 항상 편제 2입니다. 기본 5개 표적의 타입 1·2·3 구성은 2·2·1대로 무작위 순서로 섞입니다.
-- 타입 1은 life 2, 점수 5이며 1대부터 타격을 시작할 수 있습니다. 10스텝 후 성공 시 1대는 life 1 감소·보상 2.5점, 2대는 life 2 감소·보상 5점을 줍니다(남은 life 이내). 참여자는 시작 시 고정되므로 이후 도착한 기체는 다음 타격에 참여할 수 있습니다.
-- 타입 2는 life 1, 점수 2이고 타입 3은 life 1, 점수 1입니다.
-- 실제 참여 인원은 남은 life도 초과하지 않습니다. 타입 1의 life가 1이면 다음 타격에는 1대만 참여·소모됩니다.
-- 모든 표적은 타격이 시작되면 10스텝 동안 중단 없이 타격하며, 완료된 타격의 성공 확률은 기본 100%입니다. 타입 1은 타격당 최대 2대, 타입 2·3은 최대 1대만 참여하며 판정 직후 참여 기체만 소진됩니다. 같은 표적에 몰린 잉여 기체는 잠기지 않고 다음 step에 다른 표적을 선택할 수 있습니다.
-- 매 step 팀 시간 페널티 계수는 `0.1`입니다.
-- PPO 학습 전용 damage credit scale은 `50`입니다.
-- `GAE lambda=0.95`를 사용해 장기 credit과 advantage variance를 균형 있게 조절합니다.
-- 모든 활성 드론은 모든 생존 표적의 현재 상태를 정확히 공유받습니다.
-
-평가 결과의 `decisions.csv`에는 매 step 각 드론이 고른 `target_id`와 해당 표적의 점수·life·추정 거리가 기록됩니다. `score_auc`는 에피소드 동안 누적 점수를 기준 점수로 정규화해 평균한 값으로, 높은 가치의 표적을 일찍 제거할수록 커집니다. `heuristic`은 타입 2·3 표적에 한 대씩 분산하고 타입 1에는 두 대씩 조를 구성한 뒤 점수 효율과 도달 시간을 기준으로 조를 배정합니다. `replay.html`에서는 선택 변화와 파괴 순서를 확인할 수 있으며 `random`, `heuristic`, 학습된 `mappo`를 같은 seed에서 비교합니다. 타격 진행 중인 드론은 움직이는 표적 주위를 선회한 뒤 타격 효과와 함께 사라집니다. 선회는 리플레이 전용 시각 효과이며 환경의 위치, 타격 시간, 보상과 정책 입력에는 영향을 주지 않습니다.
-
-구현 중심 파일은 [env.py](pointmass_rl/env.py), [strike_ppo.py](pointmass_rl/strike_ppo.py), [policies.py](pointmass_rl/policies.py), [default.json](configs/default.json)입니다.
+동일한 10개 시나리오에서 H1은 belief 기반 polygon 탐색 후 즉시 표적을 처리합니다. H2는 두 대가 전반부 900초 동안 영역을 나눠 고르게 탐색하고 이후 타입 우선 처리에 합류합니다. 결과·영상은 `runs/belief_polygon_heuristic_comparison/index.html`, `results.csv`, `comparison.pdf`에 저장합니다. `--render-only`는 저장된 궤적으로 영상만 다시 생성합니다.

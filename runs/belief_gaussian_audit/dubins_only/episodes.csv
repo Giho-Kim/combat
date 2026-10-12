@@ -1,0 +1,4 @@
+policy,seed,team_return,discounted_team_return,score,mission_success,success_threshold,discovery_fraction,discovered_objects,unseen_expected_count,first_detection_step,steps,reported_unseen_expected_count,background_unseen_expected_count,intel_sigma_posterior_mean,intel_sigma_posterior_std
+random,10001,0.0,0.0,0.0,False,5.0,0.4,2,2.755973301913852,902,1800,1.0352701769138508,1.720703125,9.395857695186345,4.483871955055438
+nearest,10001,0.0,0.0,0.0,False,5.0,0.0,0,4.62890625,,1800,3.0,1.62890625,11.277001629236095,5.942527067179738
+type_priority,10001,0.0,0.0,0.0,False,5.0,0.0,0,4.761718749999998,,1800,2.9999999999999987,1.76171875,11.301558407140497,5.9827339237631305

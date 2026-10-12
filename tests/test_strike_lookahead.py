@@ -38,11 +38,11 @@ class LookaheadCreditTests(unittest.TestCase):
         self.assertGreater(credit[2], credit[0])
 
     def test_training_smoke(self):
-        from pointmass_rl.strike_ppo import train_mappo
+        from pointmass_rl.strike_ppo import train_target_allocation
         import torch
         config = Config(n_agents=2, min_agents=2, n_targets=3, min_targets=3,
                         horizon=4, gae_lambda=1.)
-        model, _, _, _ = train_mappo(config, 40, rollout_steps=4, n_envs=2,
+        model, _, _, _ = train_target_allocation(config, 40, rollout_steps=4, n_envs=2,
             epochs=1, eval_interval=0, algorithm='target_coma',
             coma_advantage='sampled_return', lookahead_credit=10.)
         self.assertTrue(all(torch.isfinite(p).all() for p in model.parameters()))
@@ -67,8 +67,8 @@ class LookaheadCreditTests(unittest.TestCase):
         from tempfile import TemporaryDirectory
         from pathlib import Path
         from pointmass_rl.strike_ppo import save_checkpoint, model_from_checkpoint
-        from pointmass_rl.strike_target_actor import TargetScoringCOMAActorCritic
-        model = TargetScoringCOMAActorCritic(5, 5)
+        from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+        model = TargetAllocationActorCritic(5, 5)
         model.training_settings = {'deadline_mask': True}
         self.world.targets[0] = [90, 90]
         with TemporaryDirectory() as directory:
@@ -78,7 +78,7 @@ class LookaheadCreditTests(unittest.TestCase):
         self.assertFalse(restored.available_actions(self.world)[:, 0].any())
 
     def test_validation_oracle_accounts_for_capacity_and_reachability(self):
-        from scripts.verify_solve123 import physical_optimum
+        from pointmass_rl.validation_oracle import physical_optimum
         self.assertEqual(physical_optimum(self.world), 12.)
         self.world.targets[:2] = [90, 90]
         self.assertEqual(physical_optimum(self.world), 5.)

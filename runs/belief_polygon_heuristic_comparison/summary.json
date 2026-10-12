@@ -1,0 +1,10 @@
+{
+  "h1": {
+    "mean_completed": 2.5,
+    "total_completed": 25
+  },
+  "h2": {
+    "mean_completed": 2.4,
+    "total_completed": 24
+  }
+}

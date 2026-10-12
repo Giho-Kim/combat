@@ -9,7 +9,7 @@ import torch
 from pointmass_rl.env import Config, World, evaluation_task_for_episode
 from pointmass_rl.policies import TypePriorityPolicy
 from pointmass_rl.strike_ppo import (
-    DecisionSchedule, StrikeActorCritic, actor_observation, load_checkpoint,
+    DecisionSchedule, _model_observation, model_from_checkpoint,
 )
 
 
@@ -34,14 +34,14 @@ def rollout(model, config, seed, task, mode, sampling_seed=0, trace=False):
             decision = active & (world.locked_targets() < 0)
             probabilities = None
         else:
-            actor_obs = torch.as_tensor(actor_observation(world), dtype=torch.float32)
+            actor_obs = torch.as_tensor(_model_observation(model, world, schedule), dtype=torch.float32)
             available = model.target_mask(actor_obs).numpy()
             mask, decision = schedule.mask(world, available)
             action_mask = torch.as_tensor(mask)
             probabilities = model.distributions(actor_obs, action_mask).probs.tolist()
             action, _ = model.act(actor_obs, deterministic=mode == 'deterministic',
                                   action_mask=action_mask)
-            schedule.record(world, action['target'], decision)
+            schedule.record(world, action['target'], decision, np.asarray(probabilities))
         targets = action['target']
         changed = active & (previous >= 0) & (targets != previous)
         switches += changed
@@ -70,8 +70,7 @@ def main():
     metadata = json.loads((args.run / 'training_metadata.json').read_text())
     config = Config.load(args.run / 'config.json')
     torch.set_num_threads(1)
-    model = StrikeActorCritic(config.n_targets, config.n_agents)
-    checkpoint_metadata = load_checkpoint(args.run / 'latest.pt', model)
+    model = model_from_checkpoint(args.run / 'latest.pt', config)
     model.eval()
     args.out.mkdir(parents=True, exist_ok=True)
     summaries = []

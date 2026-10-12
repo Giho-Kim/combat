@@ -354,7 +354,7 @@ class ApproximateDPPolicy:
         return strike_action(targets.astype(int))
 
 
-class StrikeMAPPOPolicy:
+class TargetAllocationPolicy:
     def __init__(self, path, config, resolver=True, device='cpu'):
         from .strike_ppo import model_from_checkpoint
         self.model = model_from_checkpoint(path, config, device=device)

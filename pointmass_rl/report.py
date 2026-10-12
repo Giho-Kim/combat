@@ -19,7 +19,7 @@ body{font:15px system-ui;margin:24px auto;max-width:1280px;padding:0 16px;backgr
 <script>
 const data=__DATA__,friendlyColor='#59c3ff',formationColors=['#ff5d73','#ffc857'],loiterRadius=.8;
 const sel=document.getElementById('policy'),focus=document.getElementById('focus'),slider=document.getElementById('time'),ctx=document.getElementById('map').getContext('2d'),mini=document.getElementById('overview').getContext('2d');
-const policyLabels={mat:'MAT-style PPO (학습 정책)',coma:'COMA-PPO (학습 정책)',mappo:'Centralized PPO (학습 정책)',heuristic:'Greedy',nearest:'가장 가까운 표적',type_priority:'타입 우선',random:'Random (비교 기준)',approximate_dp:'Lookahead'};
+const policyLabels={target_coma_resolver:'Target Allocation',target_coma_no_resolver:'Target Allocation (no resolver)',heuristic:'Greedy',nearest:'가장 가까운 표적',type_priority:'타입 우선',random:'Random (비교 기준)',approximate_dp:'Lookahead'};
 for(const key of Object.keys(data.runs)){const option=document.createElement('option');option.value=key;option.textContent=policyLabels[key]??key;sel.appendChild(option)}
 sel.value=['mat','coma','mappo','approximate_dp','type_priority','nearest','heuristic'].find(key=>data.runs[key])??Object.keys(data.runs)[0];
 function farthestDrone(frames){const n=frames[0].drones.length,maxDistance=Array(n).fill(-1);for(const frame of frames){frame.drones.forEach((p,i)=>{const d=Math.hypot(p[0]-frame.base[0],p[1]-frame.base[1]);maxDistance[i]=Math.max(maxDistance[i],d)})}return maxDistance.indexOf(Math.max(...maxDistance))}
@@ -62,13 +62,13 @@ def plot(path, summaries):
         policies = list(summaries)
         display = {'heuristic': 'Greedy', 'nearest': 'Nearest',
                    'type_priority': 'Type priority',
-                   'approximate_dp': 'Lookahead', 'mappo': 'MAPPO',
-                   'coma': 'COMA-PPO', 'mat': 'MAT-style PPO'}
+                   'approximate_dp': 'Lookahead', 'target_coma_resolver': 'Target Allocation',
+                   'target_coma_no_resolver': 'Target Allocation (no resolver)'}
         labels = [display.get(policy, policy) for policy in policies]
         means = [summaries[policy][key]['mean'] for policy in policies]
         colors = {'nearest': '#7c899e', 'type_priority': '#55a798',
                   'heuristic': '#55a798', 'approximate_dp': '#e4ae58',
-                  'mappo': '#647ddd', 'coma': '#d4749f', 'mat': '#a47ddd'}
+                  'target_coma_resolver': '#647ddd', 'target_coma_no_resolver': '#d4749f'}
         ax.bar(labels, means, color=[colors.get(policy, '#7c899e') for policy in policies])
         ax.set_title(label, fontsize=10)
         ax.set_ylim(0, 1.12)

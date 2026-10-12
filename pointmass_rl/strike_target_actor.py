@@ -1,16 +1,14 @@
-"""Experimental shared target scorer; actions and environment masks are unchanged."""
+"""Target Allocation: peer-attention actor and relational counterfactual critic."""
 import numpy as np
 import torch
 from copy import deepcopy
 from torch import nn
 
-from .strike_ppo import (StrikeActorCritic, StrikeCOMAActorCritic, _mappo_body,
+from .strike_ppo import (_ActorCriticBase, _TargetQBase, _initialization_mlp,
                          _normalized_drone_velocities)
 
 
-class TargetScoringActorCritic(StrikeActorCritic):
-    architecture = 'strike_target_mappo_v8'
-    algorithm = 'target_mappo'
+class TargetScoringBase(_ActorCriticBase):
     teammate_features = True
     mask_inactive_intent = True
     compact_inputs = True
@@ -35,7 +33,7 @@ class TargetScoringActorCritic(StrikeActorCritic):
             scorer_width += 2 * n_agents
         if self.actor_target_distances:
             scorer_width += n_agents
-        self.actor_body = _mappo_body(scorer_width, hidden)
+        self.actor_body = _initialization_mlp(scorer_width, hidden)
         self.target_head = nn.Linear(hidden, 1)
         nn.init.orthogonal_(self.target_head.weight, gain=.01)
         nn.init.zeros_(self.target_head.bias)
@@ -45,14 +43,14 @@ class TargetScoringActorCritic(StrikeActorCritic):
             self.state_dim = 1 + 4 * n_agents + self.target_features * n_targets + strike_matrix_width
             if self.drone_velocity:
                 self.state_dim += 2 * n_agents
-            if isinstance(self, StrikeCOMAActorCritic):
+            if isinstance(self, _TargetQBase):
                 self.state_dim += n_agents * n_targets
                 if getattr(self, 'critic_previous_actions', False):
                     self.state_dim += n_agents * n_targets
-                self.q_body = _mappo_body(self.state_dim + n_agents * n_targets, hidden)
+                self.q_body = _initialization_mlp(self.state_dim + n_agents * n_targets, hidden)
                 self.target_q_body = deepcopy(self.q_body).requires_grad_(False)
             else:
-                self.critic_body = _mappo_body(self.state_dim, hidden)
+                self.critic_body = _initialization_mlp(self.state_dim, hidden)
 
     def actor_logits(self, obs):
         velocities = None
@@ -151,10 +149,8 @@ class TargetScoringActorCritic(StrikeActorCritic):
         return self.target_head(self.actor_body(features)).squeeze(-1)
 
 
-class LegacyV9TargetScoringCOMAActorCritic(TargetScoringActorCritic, StrikeCOMAActorCritic):
+class TargetHistoryBase(TargetScoringBase, _TargetQBase):
     """Shared target scorer with teammate inputs and the Q-only COMA critic."""
-    architecture = 'strike_target_coma_v9'
-    algorithm = 'target_coma'
     critic_previous_probabilities = True
     critic_mask_inactive_intent = True
     critic_strike_participants = False
@@ -187,62 +183,6 @@ class LegacyV9TargetScoringCOMAActorCritic(TargetScoringActorCritic, StrikeCOMAA
         return super().target_mask(obs)
 
 
-class LegacyV10TargetScoringCOMAActorCritic(LegacyV9TargetScoringCOMAActorCritic):
-    """DQN-style discrete Q over all joint target choices."""
-    architecture = 'strike_target_coma_v10'
-
-    def __init__(self, n_targets, n_agents, hidden=64):
-        super().__init__(n_targets, n_agents, hidden)
-        self.n_joint_actions = n_targets ** n_agents
-        self.q_body = _mappo_body(self.state_dim, hidden)
-        self.q_head = nn.Linear(hidden, self.n_joint_actions)
-        nn.init.orthogonal_(self.q_head.weight, gain=1.0)
-        nn.init.zeros_(self.q_head.bias)
-        self.target_q_body = deepcopy(self.q_body).requires_grad_(False)
-        self.target_q_head = deepcopy(self.q_head).requires_grad_(False)
-
-    def joint_action_index(self, joint_action):
-        """Encode agent-ordered target IDs as a base-n_targets index."""
-        if joint_action.shape[-1] != self.n_agents:
-            raise ValueError('joint_action has the wrong number of agents')
-        if torch.any((joint_action < 0) | (joint_action >= self.n_targets)):
-            raise ValueError('joint_action contains an invalid target')
-        index = torch.zeros(joint_action.shape[:-1], dtype=torch.long,
-                            device=joint_action.device)
-        for agent in range(self.n_agents):
-            index = index * self.n_targets + joint_action[..., agent].long()
-        return index
-
-    def q_values(self, state):
-        return self.q_head(self.q_body(state))
-
-    def target_q_values(self, state):
-        return self.target_q_head(self.target_q_body(state))
-
-    def joint_q(self, state, joint_action):
-        return self.q_values(state).gather(
-            -1, self.joint_action_index(joint_action).unsqueeze(-1)).squeeze(-1)
-
-    def target_joint_q(self, state, joint_action):
-        return self.target_q_values(state).gather(
-            -1, self.joint_action_index(joint_action).unsqueeze(-1)).squeeze(-1)
-
-    def counterfactual_advantages(self, state, joint_action, action_probabilities,
-                                 sampled_returns=None):
-        q = self.q_values(state)
-        index = self.joint_action_index(joint_action)
-        actual = q.gather(-1, index.unsqueeze(-1)).squeeze(-1)
-        advantages = []
-        for agent in range(self.n_agents):
-            stride = self.n_targets ** (self.n_agents - agent - 1)
-            alternatives = index[:, None] + (
-                torch.arange(self.n_targets, device=index.device)[None, :]
-                - joint_action[:, agent, None]) * stride
-            counterfactual_q = q.gather(-1, alternatives)
-            baseline = (action_probabilities[:, agent] * counterfactual_q).sum(-1)
-            outcome = actual if sampled_returns is None else sampled_returns
-            advantages.append(outcome - baseline)
-        return torch.stack(advantages, dim=-1)
 
 
 class AssignmentPooling(nn.Module):
@@ -266,10 +206,10 @@ class AssignmentQBody(AssignmentPooling):
     def __init__(self, state_dim, n_agents, n_targets, hidden):
         super().__init__()
         self.n_agents, self.n_targets = n_agents, n_targets
-        self.context = _mappo_body(state_dim, hidden)
-        self.drone_encoder = _mappo_body(6 + 2 * n_targets, hidden)
-        self.target_encoder = _mappo_body(6 + 2 * hidden + 1, hidden)
-        self.team_encoder = _mappo_body(2 * hidden, hidden)
+        self.context = _initialization_mlp(state_dim, hidden)
+        self.drone_encoder = _initialization_mlp(6 + 2 * n_targets, hidden)
+        self.target_encoder = _initialization_mlp(6 + 2 * hidden + 1, hidden)
+        self.team_encoder = _initialization_mlp(2 * hidden, hidden)
 
     def forward(self, state, joint_action):
         n, t = self.n_agents, self.n_targets
@@ -296,9 +236,8 @@ class AssignmentQBody(AssignmentPooling):
         return self.team_encoder(torch.cat((context, summary), -1))
 
 
-class LegacyV11TargetScoringCOMAActorCritic(LegacyV9TargetScoringCOMAActorCritic):
+class AssignmentCriticBase(TargetHistoryBase):
     """Shared target-wise assignment critic producing a single joint-action Q."""
-    architecture = 'strike_target_coma_v11'
 
     def __init__(self, n_targets, n_agents, hidden=64):
         super().__init__(n_targets, n_agents, hidden)
@@ -312,61 +251,14 @@ class LegacyV11TargetScoringCOMAActorCritic(LegacyV9TargetScoringCOMAActorCritic
         return self.target_q_head(self.target_q_body(state, joint_action)).squeeze(-1)
 
 
-class RelationAssignmentQBody(AssignmentPooling):
-    """Encode selected drone-target pairs and concatenate their target pools."""
-
-    def __init__(self, state_dim, n_agents, n_targets, hidden):
-        super().__init__()
-        self.n_agents, self.n_targets = n_agents, n_targets
-        # Drone (6 + 2*T), selected target (6), target-minus-drone xy (2).
-        self.pair_encoder = _mappo_body(14 + 2 * n_targets, hidden)
-        self.team_encoder = _mappo_body(state_dim + n_targets * (hidden + 1), hidden)
-
-    def forward(self, state, joint_action):
-        n, t = self.n_agents, self.n_targets
-        if joint_action.shape != (*state.shape[:-1], n):
-            raise ValueError('joint_action must contain one target per drone')
-        if torch.any((joint_action < 0) | (joint_action >= t)):
-            raise ValueError('joint_action contains an invalid target')
-        drone_end = 1 + 4 * n
-        target_end = drone_end + 6 * t
-        drones = state[..., 1:drone_end].reshape(*state.shape[:-1], n, 4)
-        targets = state[..., drone_end:target_end].reshape(*state.shape[:-1], t, 6)
-        probabilities = state[..., target_end:target_end + n * t].reshape(
-            *state.shape[:-1], t, n).transpose(-1, -2)
-        choices = state[..., target_end + n * t:target_end + 2 * n * t].reshape(
-            *state.shape[:-1], t, n).transpose(-1, -2)
-        velocities = state[..., -2 * n:].reshape(*state.shape[:-1], n, 2)
-        selected = targets.gather(-2, joint_action.long().unsqueeze(-1).expand(
-            *joint_action.shape, 6))
-        embeddings = self.pair_encoder(torch.cat((
-            drones, velocities, probabilities, choices, selected,
-            selected[..., :2] - drones[..., :2]), dim=-1))
-        pooled, counts = self.aggregate_assignments(embeddings, drones[..., 2], joint_action)
-        # Preserve target identity/order; there is no sum across target slots.
-        assignments = torch.cat((pooled, counts), dim=-1).flatten(-2)
-        return self.team_encoder(torch.cat((state, assignments), dim=-1))
 
 
-class TargetScoringCOMAActorCritic(LegacyV11TargetScoringCOMAActorCritic):
-    """Selected pair embeddings, per-target pooling, then raw-state concatenation."""
-    architecture = 'strike_target_coma_v12'
-
-    def __init__(self, n_targets, n_agents, hidden=64):
-        super().__init__(n_targets, n_agents, hidden)
-        self.q_body = RelationAssignmentQBody(self.state_dim, n_agents, n_targets, hidden)
-        self.target_q_body = deepcopy(self.q_body).requires_grad_(False)
 
 
-class DistanceTargetScoringCOMAActorCritic(TargetScoringCOMAActorCritic):
-    """v12 pair critic with explicit observed drone-target distances in the actor."""
-    architecture = 'strike_target_coma_v13'
-    actor_target_distances = True
 
 
-class GraphTargetScoringCOMAActorCritic(LegacyV11TargetScoringCOMAActorCritic):
-    """v12 actor, slot-independent relational online/target Q."""
-    architecture = 'strike_target_coma_v14'
+class RelationalCriticBase(AssignmentCriticBase):
+    """Shared initialization and slot-independent relational online/target Q."""
 
     def __init__(self, n_targets, n_agents, hidden=64):
         super().__init__(n_targets, n_agents, hidden)
@@ -378,8 +270,8 @@ class GraphTargetScoringCOMAActorCritic(LegacyV11TargetScoringCOMAActorCritic):
         """Transfer online and target Q across slot counts; leave actor untouched."""
         from .strike_ppo import checkpoint_payload
         payload = checkpoint_payload(path)
-        if payload.get('architecture') not in ('strike_target_coma_v14', 'strike_target_coma_v15') or payload.get('hidden', 64) != self.hidden:
-            raise ValueError('Critic transfer requires a v14/v15 checkpoint with matching hidden width')
+        if payload.get('architecture') != 'target_allocation' or payload.get('hidden', 64) != self.hidden:
+            raise ValueError('Critic transfer requires a Target Allocation checkpoint with matching hidden width')
         for name in ('q_body', 'q_head', 'target_q_body', 'target_q_head'):
             prefix = name + '.'
             weights = {key[len(prefix):]: value for key, value in payload['state_dict'].items()
@@ -407,9 +299,11 @@ class GraphTargetScoringCOMAActorCritic(LegacyV11TargetScoringCOMAActorCritic):
         return outcome - (action_probabilities * q).sum(-1)
 
 
-class AttentionTargetScoringCOMAActorCritic(GraphTargetScoringCOMAActorCritic):
+class TargetAllocationActorCritic(RelationalCriticBase):
     """Slot-independent peer cross-attention actor and relational graph Q."""
-    architecture = 'strike_target_coma_v15'
+    architecture = 'target_allocation'
+    algorithm = 'target_coma'
+    display_name = 'Target Allocation'
 
     def __init__(self, n_targets, n_agents, hidden=64):
         super().__init__(n_targets, n_agents, hidden)
@@ -450,99 +344,3 @@ class AttentionTargetScoringCOMAActorCritic(GraphTargetScoringCOMAActorCritic):
         mask = intent_mask & (identity < .5).unsqueeze(-2)
         features = self.actor_body(query, peer, mask)
         return self.target_head(features).squeeze(-1)
-
-
-class NoVelocityTargetScoringCOMAActorCritic(LegacyV9TargetScoringCOMAActorCritic):
-    """Read v8 checkpoints with previous choices but no velocity features."""
-    architecture = 'strike_target_coma_v8'
-    drone_velocity = False
-
-
-class PreviousChoiceActorTargetScoringCOMAActorCritic(NoVelocityTargetScoringCOMAActorCritic):
-    """Read v7 checkpoints whose critic did not see previous actual choices."""
-    architecture = 'strike_target_coma_v7'
-    critic_previous_actions = False
-
-
-class PreviousProbabilityTargetScoringCOMAActorCritic(PreviousChoiceActorTargetScoringCOMAActorCritic):
-    """Read v6 checkpoints before hard previous choices were added."""
-    architecture = 'strike_target_coma_v6'
-    actor_previous_actions = False
-
-    def observation(self, world, previous_action_probabilities=None):
-        return TargetScoringActorCritic.observation(
-            self, world, previous_action_probabilities)
-
-
-class AliveStatusTargetScoringCOMAActorCritic(PreviousProbabilityTargetScoringCOMAActorCritic):
-    architecture = 'strike_target_coma_v5'
-    actor_idle_status = False
-
-
-class AliveStatusTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v7'
-    actor_idle_status = False
-
-
-class ProgressTargetScoringCOMAActorCritic(PreviousProbabilityTargetScoringCOMAActorCritic):
-    architecture = 'strike_target_coma_v4'
-    actor_teammate_progress = True
-
-
-class StrikeMatrixTargetScoringCOMAActorCritic(PreviousProbabilityTargetScoringCOMAActorCritic):
-    architecture = 'strike_target_coma_v3'
-    critic_strike_participants = True
-    actor_teammate_progress = True
-
-
-class ProgressTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v6'
-    actor_teammate_progress = True
-
-
-class LegacyTargetScoringCOMAActorCritic(PreviousProbabilityTargetScoringCOMAActorCritic):
-    architecture = 'strike_target_coma_v1'
-    critic_previous_probabilities = False
-    mask_inactive_intent = False
-    compact_inputs = False
-
-
-class FullInputTargetScoringCOMAActorCritic(PreviousProbabilityTargetScoringCOMAActorCritic):
-    architecture = 'strike_target_coma_v2'
-    compact_inputs = False
-
-
-class FullInputTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v5'
-    compact_inputs = False
-
-
-class UnmaskedTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v4'
-    mask_inactive_intent = False
-    compact_inputs = False
-
-
-class ScalarTypeTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v1'
-    one_hot_target_type = False
-    uses_previous_action_probabilities = False
-    teammate_features = False
-    mask_inactive_intent = False
-    compact_inputs = False
-
-
-class HardAssignmentTargetScoringActorCritic(TargetScoringActorCritic):
-    """Read v2 checkpoints whose scorer observed hard previous assignments."""
-    architecture = 'strike_target_mappo_v2'
-    uses_previous_action_probabilities = False
-    teammate_features = False
-    mask_inactive_intent = False
-    compact_inputs = False
-
-
-class LegacyTargetScoringActorCritic(TargetScoringActorCritic):
-    architecture = 'strike_target_mappo_v3'
-    teammate_features = False
-    mask_inactive_intent = False
-    compact_inputs = False

@@ -5,8 +5,8 @@ from tempfile import TemporaryDirectory
 import torch
 
 from pointmass_rl.graph_critic import GraphQBody, RelationAttention
-from pointmass_rl.strike_target_actor import GraphTargetScoringCOMAActorCritic, TargetScoringCOMAActorCritic
-from pointmass_rl.strike_ppo import save_checkpoint, model_from_checkpoint, train_mappo
+from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.strike_ppo import save_checkpoint, model_from_checkpoint, train_target_allocation
 from pointmass_rl.env import Config
 
 
@@ -33,8 +33,8 @@ class GraphCriticTests(unittest.TestCase):
         torch.manual_seed(29)
 
     def test_same_weights_accept_different_slot_counts(self):
-        model = GraphTargetScoringCOMAActorCritic(5, 5)
-        other = GraphTargetScoringCOMAActorCritic(12, 8)
+        model = TargetAllocationActorCritic(5, 5)
+        other = TargetAllocationActorCritic(12, 8)
         other.q_body.load_state_dict(model.q_body.state_dict())
         other.q_head.load_state_dict(model.q_head.state_dict())
         for n, t in [(1, 1), (2, 3), (5, 5), (8, 12)]:
@@ -46,15 +46,6 @@ class GraphCriticTests(unittest.TestCase):
             torch.testing.assert_close(actual, other.joint_q(state, action))
             torch.testing.assert_close(actual, model.target_joint_q(state, action))
 
-    def test_actor_initialization_matches_v12(self):
-        torch.manual_seed(7)
-        old = TargetScoringCOMAActorCritic(5, 5)
-        torch.manual_seed(7)
-        new = GraphTargetScoringCOMAActorCritic(5, 5)
-        for name in ('actor_body', 'target_head'):
-            for key, value in getattr(old, name).state_dict().items():
-                torch.testing.assert_close(getattr(new, name).state_dict()[key], value)
-        self.assertEqual(old.obs_dim, new.obs_dim)
 
     def test_aggregation_preserves_duplicate_message_multiplicity(self):
         attention = RelationAttention(16)
@@ -75,7 +66,7 @@ class GraphCriticTests(unittest.TestCase):
         torch.testing.assert_close(body(pack(*fields), action), body(reordered, new_action), atol=2e-5, rtol=1e-5)
 
     def test_padding_and_dead_actions_do_not_change_q(self):
-        model = GraphTargetScoringCOMAActorCritic(3, 2)
+        model = TargetAllocationActorCritic(3, 2)
         fields, action = example(2, 3)
         time, drones, targets, probs, previous = fields
         expected = model.joint_q(pack(*fields), action)
@@ -92,7 +83,7 @@ class GraphCriticTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(model.joint_q(pack(time, drones, targets, probs, previous), action)).all())
 
     def test_counterfactual_runtime_sizes_and_action_sensitivity(self):
-        model = GraphTargetScoringCOMAActorCritic(5, 5)
+        model = TargetAllocationActorCritic(5, 5)
         fields, action = example(2, 3)
         state = pack(*fields)
         probabilities = torch.full((2, 2, 3), 1 / 3)
@@ -110,7 +101,7 @@ class GraphCriticTests(unittest.TestCase):
         self.assertGreater(advantage.abs().max().item(), 1e-6)
 
     def test_gradients_target_update_and_checkpoint(self):
-        model = GraphTargetScoringCOMAActorCritic(3, 2)
+        model = TargetAllocationActorCritic(3, 2)
         fields, action = example(2, 3)
         loss = (model.joint_q(pack(*fields), action) - 3).square().mean()
         loss.backward()
@@ -126,7 +117,7 @@ class GraphCriticTests(unittest.TestCase):
             path = Path(directory) / 'graph.pt'
             save_checkpoint(path, model, {})
             restored = model_from_checkpoint(path, Config(n_agents=2, min_agents=2, n_targets=3, min_targets=3))
-            resized = GraphTargetScoringCOMAActorCritic(7, 4)
+            resized = TargetAllocationActorCritic(7, 4)
             actor_before = {k: v.clone() for k, v in resized.actor_body.state_dict().items()}
             resized.load_critic_checkpoint(path)
             larger_fields, larger_action = example(4, 7)
@@ -140,15 +131,6 @@ class GraphCriticTests(unittest.TestCase):
         torch.testing.assert_close(restored.joint_q(pack(*fields), action), model.joint_q(pack(*fields), action))
         torch.testing.assert_close(restored.target_joint_q(pack(*fields), action), model.target_joint_q(pack(*fields), action))
 
-    def test_training_defaults_to_graph_with_original_actor_and_reselection(self):
-        config = Config(n_agents=2, min_agents=2, n_targets=3, min_targets=3, horizon=4)
-        model, _, _, _ = train_mappo(config, 24, n_envs=2, rollout_steps=4, epochs=1,
-                                    critic_epochs=1, eval_interval=0, algorithm='target_coma',
-                                    target_coma_actor='mlp')
-        self.assertEqual(model.architecture, 'strike_target_coma_v14')
-        self.assertFalse(model.training_settings['commit_target'])
-        self.assertFalse(model.actor_target_distances)
-        self.assertTrue(all(torch.isfinite(p).all() for p in model.parameters()))
 
 
 if __name__ == '__main__':

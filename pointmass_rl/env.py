@@ -99,12 +99,44 @@ class Config:
     belief_turn_radius: float = 2.0  # Map units; 200 m in the game scale.
     belief_search_margin: float = 10.0  # 1 km on each side of the 10 km map.
     belief_lawnmower: bool = True
+    belief_initial_intel: bool = False
+    belief_intel_sigma: float = 10.0  # Nominal per-axis centre error, in 100 m units.
+    belief_intel_log_sigma_std: float = 0.5  # Uncertainty about that error scale.
+    belief_soft_detection: bool = False  # Old checkpoints retain hard sensor footprints.
+    belief_representation: str = 'histogram'  # Missing in legacy checkpoints.
+    belief_background_mass: float = 1.0  # Persistent search weight, not hidden target count.
+    belief_background_type_prior: tuple = (1/3, 1/3, 1/3)
+    belief_background_redistribute: bool = False  # Preserve older checkpoint dynamics.
+    belief_background_update: str = 'likelihood'
+    belief_report_association: str = 'soft'
+    belief_integration_order: int = 16  # Numerical integration only; not belief cells.
+    belief_gaussian_min_sigma: float = 0.75
     detection_probability: float = 1.0
     formation_layout: str = 'legacy'
 
     def __post_init__(self):
         if self.mode not in ('known', 'belief'):
             raise ValueError('mode must be known or belief')
+        if self.belief_representation not in ('histogram', 'gaussian_uniform'):
+            raise ValueError('Unknown belief_representation')
+        if not np.isfinite(self.belief_background_mass) or self.belief_background_mass < 0:
+            raise ValueError('belief_background_mass must be finite and nonnegative')
+        type_prior = np.asarray(self.belief_background_type_prior, dtype=float)
+        if type(self.belief_background_redistribute) is not bool:
+            raise ValueError('belief_background_redistribute must be a boolean')
+        if self.belief_background_update not in ('likelihood', 'local'):
+            raise ValueError('Unknown background update')
+        if self.belief_report_association not in ('soft', 'hard'):
+            raise ValueError('Unknown report association')
+        if (type_prior.shape != (3,) or not np.isfinite(type_prior).all()
+                or (type_prior < 0).any() or not np.isclose(type_prior.sum(), 1., rtol=0, atol=1e-8)):
+            raise ValueError('belief_background_type_prior must contain three probabilities summing to 1')
+        if type(self.belief_integration_order) is not int or not 8 <= self.belief_integration_order <= 64:
+            raise ValueError('belief_integration_order must be an integer in 8..64')
+        if not np.isfinite(self.belief_gaussian_min_sigma) or self.belief_gaussian_min_sigma <= 0:
+            raise ValueError('belief_gaussian_min_sigma must be finite and positive')
+        if self.belief_representation == 'gaussian_uniform' and not self.belief_soft_detection:
+            raise ValueError('Gaussian belief requires the smooth detection model')
         if self.formation_layout not in ('legacy', 'configured'):
             raise ValueError('formation_layout must be legacy or configured')
         if type(self.belief_grid) is not int or not 1 <= self.belief_grid <= 8:
@@ -115,12 +147,23 @@ class Config:
             raise ValueError('belief_turn_radius must be finite and positive')
         if type(self.belief_lawnmower) is not bool:
             raise ValueError('belief_lawnmower must be a boolean')
+        if type(self.belief_initial_intel) is not bool:
+            raise ValueError('belief_initial_intel must be a boolean')
+        if type(self.belief_soft_detection) is not bool:
+            raise ValueError('belief_soft_detection must be a boolean')
+        if not np.isfinite(self.belief_intel_sigma) or self.belief_intel_sigma <= 0:
+            raise ValueError('belief_intel_sigma must be finite and positive')
+        if (not np.isfinite(self.belief_intel_log_sigma_std)
+                or not 0 <= self.belief_intel_log_sigma_std <= 1.5):
+            raise ValueError('belief_intel_log_sigma_std must be finite and in [0, 1.5]')
         if not np.isfinite(self.belief_search_margin) or self.belief_search_margin < 0:
             raise ValueError('belief_search_margin must be finite and nonnegative')
         if self.mode == 'belief' and 2*self.belief_search_margin >= self.size:
             raise ValueError('belief_search_margin must leave a nonempty search area')
         if not 0 < self.detection_probability <= 1:
             raise ValueError('detection_probability must be in (0, 1]')
+        if self.belief_soft_detection and self.detection_probability >= 1:
+            raise ValueError('Soft detection requires detection_probability < 1')
         if type(self.decision_interval) is not int or self.decision_interval < 1:
             raise ValueError('decision_interval must be a positive integer')
         if not 1 <= self.n_agents <= 10:
@@ -155,6 +198,13 @@ class Config:
             raise ValueError("strike_steps_per_life must be a positive integer")
         if not 0 < self.sensor_fov_deg <= 360:
             raise ValueError("sensor_fov_deg must be in (0, 360]")
+        if self.mode == 'belief' and self.belief_initial_intel and not self.belief_soft_detection:
+            radius = (self.size-2*self.belief_search_margin) / (
+                self.belief_grid*self.belief_subcells*np.sqrt(2))
+            half_angle = min(np.deg2rad(self.sensor_fov_deg)/2, np.pi/2)
+            if radius*(1+1/np.sin(half_angle)) >= self.sensor_range:
+                raise ValueError('Report belief cells must fit inside the sensor footprint; '
+                                 'increase belief_subcells or sensor_range')
         if not 0 < self.formation_two_progress < 1:
             raise ValueError("formation_two_progress must be in (0, 1)")
         if min(self.position_noise, self.initial_intel_noise) < 0:
@@ -618,7 +668,7 @@ class World:
             reward[step_active] += team_step_reward / agent_count
         else:
             # Keep fixed-horizon team rewards observable after every drone has
-            # been expended by distributing them over the fixed agent slots.
+            # been expended; PPO consumes reward.sum() as the cooperative reward.
             reward += team_step_reward / self.n
         self.vel[~self.agent_active] = 0
         self.last_agent_terminated = step_active & ~self.agent_active

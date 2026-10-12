@@ -7,7 +7,7 @@ from .env import (Config, EVALUATION_TASKS, SUCCESS_THRESHOLDS, World,
                   evaluation_task_for_episode, split_strike_action,
                   target_remaining_value)
 from .policies import (ApproximateDPPolicy, HeuristicPolicy, NearestTargetPolicy,
-                       RandomPolicy, StrikeMAPPOPolicy, TypePriorityPolicy)
+                       RandomPolicy, TargetAllocationPolicy, TypePriorityPolicy)
 from .report import replay, plot
 
 def make_policy(name, config, seed, model=None):
@@ -16,7 +16,7 @@ def make_policy(name, config, seed, model=None):
     if name=='nearest': return NearestTargetPolicy(config,seed)
     if name=='type_priority': return TypePriorityPolicy(config,seed)
     if name=='approximate_dp': return ApproximateDPPolicy(config,seed)
-    if name in ('mappo', 'coma', 'compact_coma', 'mat', 'target_mappo', 'target_coma'): return StrikeMAPPOPolicy(model,config)
+    if name in ('target_allocation', 'target_coma'): return TargetAllocationPolicy(model,config)
     raise ValueError(name)
 
 def rollout(config, policy, seed, record=False, success_threshold=None,
@@ -25,7 +25,7 @@ def rollout(config, policy, seed, record=False, success_threshold=None,
     world=World(config);obs=world.reset(seed,success_threshold=success_threshold,
                                        evaluation_task=evaluation_task);frames=[world.snapshot()] if record else [];decisions=[]
     while not world.done:
-        action=(policy.predict(obs,world) if isinstance(policy,StrikeMAPPOPolicy)
+        action=(policy.predict(obs,world) if isinstance(policy,TargetAllocationPolicy)
                 else policy.predict(obs))
         if record:
             targets=split_strike_action(action)
@@ -79,10 +79,8 @@ def command_config(args):
 
 def train(args):
     c=command_config(args)
-    if args.model_based_advantage and (c.mode != 'known' or args.algorithm != 'target_coma'
-                                       or args.target_coma_critic != 'graph'
-                                       or args.target_coma_actor != 'attention'):
-        raise ValueError('--model-based-advantage requires known-mode v15 target_coma')
+    if args.model_based_advantage and c.mode != 'known':
+        raise ValueError('--model-based-advantage requires Target Allocation')
     if c.mode == 'belief':
         if getattr(args, 'device', 'auto') == 'cuda':
             raise ValueError('--device cuda currently supports known mode')
@@ -92,11 +90,11 @@ def train(args):
         return
     try:
         import torch
-        from .strike_ppo import train_mappo,save_checkpoint
+        from .strike_ppo import train_target_allocation,save_checkpoint
     except ImportError as e: raise SystemExit(str(e)) from e
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True);c.save(out/'config.json')
-    print(f'Training centralized Strike PPO: {args.steps:,} agent transitions',flush=True)
-    model,episodes,evaluations,actual=train_mappo(
+    print(f'Training Target Allocation: {args.steps:,} agent transitions',flush=True)
+    model,episodes,evaluations,actual=train_target_allocation(
         c,args.steps,args.seed,args.rollout_steps,epochs=args.epochs,progress=True,
         learning_rate=args.learning_rate, minibatch_size=args.minibatch_size,
         entropy_coef=args.entropy_coef, policy_clip=args.policy_clip,
@@ -107,6 +105,7 @@ def train(args):
         target_coma_critic=args.target_coma_critic,
         target_coma_actor=args.target_coma_actor,
         critic_minibatch_size=args.critic_minibatch_size, best_metric=args.best_metric,
+        initial_checkpoint=args.initial_checkpoint,
         lookahead_credit=args.lookahead_credit,
         deadline_mask=args.deadline_mask,
         eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
@@ -116,21 +115,7 @@ def train(args):
                   eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
                   evaluation_tasks=list(EVALUATION_TASKS) if evaluation_task_for_episode(c,0) else None,
                   config=asdict(c),python=platform.python_version(),numpy=str(np.__version__),torch=str(torch.__version__),
-                  algorithm=('Model-assisted counterfactual PPO with assignment-damage guidance'
-                             if args.lookahead_credit else
-                             'Sampled-return counterfactual PPO'
-                             if args.coma_advantage == 'sampled_return' else
-                             'MAT-style autoregressive PPO with separate team critic'
-                             if args.algorithm == 'mat' else
-                             'Shared target-scoring actor with COMA advantage and PPO clipped loss'
-                             if args.algorithm == 'target_coma' else
-                             'Matched-information global MLP actor with COMA advantage and PPO clipped loss'
-                             if args.algorithm == 'compact_coma' else
-                             'COMA counterfactual advantage with PPO clipped actor loss'
-                             if args.algorithm == 'coma' else
-                             'Shared target-scoring MAPPO with separate team critic'
-                             if args.algorithm == 'target_mappo' else
-                             'Feed-forward MAPPO with finite-horizon team returns'),
+                  algorithm='Target Allocation',
                   training_settings=model.training_settings)
     model_path = out / f'strike_{args.algorithm}.pt'
     save_checkpoint(model_path,model,metadata);write_csv(out/'training_episodes.csv',episodes)
@@ -159,9 +144,9 @@ def evaluate(args):
     if args.model:
         import torch
         torch.set_num_threads(1)
-    learned = StrikeMAPPOPolicy(args.model, c, device=args.device) if args.model else None
+    learned = TargetAllocationPolicy(args.model, c, device=args.device) if args.model else None
     learned_name = learned.model.algorithm if learned else None
-    learned_policies = ({f'{learned_name}_no_resolver': StrikeMAPPOPolicy(args.model, c, resolver=False, device=args.device),
+    learned_policies = ({f'{learned_name}_no_resolver': TargetAllocationPolicy(args.model, c, resolver=False, device=args.device),
                          f'{learned_name}_resolver': learned} if learned else {})
     names=['nearest','type_priority','approximate_dp']+list(learned_policies);rows=[];runs={};summaries={};task_success={};task_damage={};task_return={};task_discounted_return={};decisions=[]
     record_episode = args.episodes - 1
@@ -219,12 +204,12 @@ def evaluate(args):
     write_csv(out/'episodes.csv',rows);write_csv(out/'decisions.csv',decisions);replay(out/'replay.html',c,runs);plot(out/'comparison.png',summaries)
 
 def main():
-    p=argparse.ArgumentParser(description='Strike-priority point-mass reinforcement learning');s=p.add_subparsers(dest='command',required=True)
+    p=argparse.ArgumentParser(description='Target Allocation and Belief Target Allocation');s=p.add_subparsers(dest='command',required=True)
     q=s.add_parser('train');q.add_argument('--steps',type=int,default=1_000_000);q.add_argument('--rollout-steps',type=int,default=200);q.add_argument('--n-envs',type=int,default=32);q.add_argument('--seed',type=int,default=7);q.add_argument('--out',default='runs/train');q.add_argument('--config');q.add_argument('--eval-interval',type=int,default=10_000,help='agent transitions between held-out evaluations; 0 disables evaluation');q.add_argument('--eval-episodes',type=int,default=3);q.add_argument('--eval-seed',type=int,default=10_000);q.set_defaults(func=train)
     q=s.add_parser('evaluate');q.add_argument('--model');q.add_argument('--episodes',type=int,default=30);q.add_argument('--seed',type=int,default=10000);q.add_argument('--out',default='runs/eval');q.add_argument('--config');q.set_defaults(func=evaluate)
     q.add_argument('--lawnmower', action=argparse.BooleanOptionalAction, default=None,
         help='Enable/disable region lawnmower sweeps in belief evaluation; Dubins movement stays enabled (default: config)')
-    s.choices['train'].add_argument('--algorithm', choices=('mappo', 'coma', 'compact_coma', 'mat', 'target_mappo', 'target_coma'), default='mappo')
+    s.choices['train'].add_argument('--algorithm', choices=('target_allocation', 'target_coma'), default='target_allocation')
     s.choices['train'].add_argument('--learning-rate', type=float, default=5e-4)
     s.choices['train'].add_argument('--minibatch-size', type=int, default=None)
     s.choices['train'].add_argument('--entropy-coef', type=float, default=.01)
@@ -232,19 +217,21 @@ def main():
     s.choices['train'].add_argument('--gae-lambda', type=float, default=None)
     s.choices['train'].add_argument('--coma-advantage', choices=('q', 'sampled_return'), default='q',
         help='COMA actor signal: estimated Q or observed return minus counterfactual baseline')
-    s.choices['train'].add_argument('--target-coma-critic', choices=('graph', 'pair'), default='graph',
-        help='target_coma Q architecture: variable-slot graph v14 or legacy pair v12')
-    s.choices['train'].add_argument('--target-coma-actor', choices=('attention', 'mlp'), default='attention',
-        help='With graph Q: variable-slot attention actor v15 or fixed-slot MLP actor v14')
+    s.choices['train'].add_argument('--target-coma-critic', choices=('graph',), default='graph',
+        help='Target Allocation relational graph critic')
+    s.choices['train'].add_argument('--target-coma-actor', choices=('attention',), default='attention',
+        help='Target Allocation peer-attention actor')
     s.choices['train'].add_argument('--critic-epochs', type=int, default=None,
         help='COMA Q fitting epochs per rollout (default: 4 times --epochs); actor epochs unchanged')
     s.choices['train'].add_argument('--critic-minibatch-size', type=int, default=None)
+    s.choices['train'].add_argument('--initial-checkpoint', default=None,
+        help='Initialize model weights from a checkpoint; optimizer and training state are reset')
     s.choices['train'].add_argument('--best-metric', choices=('case1', 'suite_damage'), default='case1')
     model_credit=s.choices['train'].add_mutually_exclusive_group()
     model_credit.add_argument('--lookahead-credit', type=float, default=0.,
         help='COMA auxiliary assignment-damage credit weight; model-assisted training only, no planner at evaluation')
     model_credit.add_argument('--model-based-advantage', action='store_true',
-        help='Enable v15 model-assisted counterfactual actor credit with weight 1.0 (training only)')
+        help='Enable model-assisted counterfactual actor credit with weight 1.0 (training only)')
     s.choices['train'].add_argument('--deadline-mask', action='store_true',
         help='Mask stationary targets that cannot be struck before horizon; saved in checkpoint and also used at evaluation')
     s.choices['train'].add_argument('--policy-clip', type=float, default=.2)
@@ -274,6 +261,7 @@ def main():
     if hasattr(a,'eval_interval') and a.eval_interval<0:p.error('--eval-interval must be nonnegative')
     if hasattr(a,'eval_episodes') and a.eval_episodes<=0:p.error('--eval-episodes must be positive')
     if a.command == 'train':
+        a.algorithm = 'target_coma'
         if a.model_based_advantage:
             a.lookahead_credit = 1.0
         for key in ('critic_epochs', 'critic_minibatch_size'):
@@ -287,7 +275,7 @@ def main():
         if a.entropy_coef < 0: p.error('--entropy-coef must be nonnegative')
         if not 0 < a.policy_clip < 1: p.error('--policy-clip must be in (0, 1)')
         if a.policy_temperature <= 0: p.error('--policy-temperature must be positive')
-        if a.algorithm not in ('mappo', 'coma', 'compact_coma') and a.policy_temperature != 1:
-            p.error('--policy-temperature is only supported for mappo and coma variants')
+        if a.policy_temperature != 1:
+            p.error('Target Allocation uses --policy-temperature 1')
     a.func(a)
 if __name__=='__main__':main()

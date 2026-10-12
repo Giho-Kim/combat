@@ -1,0 +1,712 @@
+{
+  "steps": 4200000,
+  "mode": "none",
+  "summary": {
+    "team_return": 8.01,
+    "team_return_se": 0.3013421157207713,
+    "mission_success": 0.4,
+    "mission_success_se": 0.0492365963917331
+  },
+  "episodes": [
+    {
+      "seed": 30000,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30001,
+      "B": 8.0,
+      "team_return": 9.5,
+      "mission_success": true,
+      "damage": 9.5
+    },
+    {
+      "seed": 30002,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30003,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30004,
+      "B": 12.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30005,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30006,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30007,
+      "B": 5.0,
+      "team_return": 11.0,
+      "mission_success": true,
+      "damage": 11.0
+    },
+    {
+      "seed": 30008,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30009,
+      "B": 8.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30010,
+      "B": 12.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30011,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30012,
+      "B": 12.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30013,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30014,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30015,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30016,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30017,
+      "B": 11.0,
+      "team_return": 4.0,
+      "mission_success": false,
+      "damage": 4.0
+    },
+    {
+      "seed": 30018,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30019,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30020,
+      "B": 8.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30021,
+      "B": 12.0,
+      "team_return": 3.0,
+      "mission_success": false,
+      "damage": 3.0
+    },
+    {
+      "seed": 30022,
+      "B": 12.0,
+      "team_return": 10.0,
+      "mission_success": false,
+      "damage": 10.0
+    },
+    {
+      "seed": 30023,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30024,
+      "B": 9.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30025,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30026,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30027,
+      "B": 9.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30028,
+      "B": 9.0,
+      "team_return": 8.5,
+      "mission_success": false,
+      "damage": 8.5
+    },
+    {
+      "seed": 30029,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30030,
+      "B": 11.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30031,
+      "B": 8.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30032,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30033,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30034,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30035,
+      "B": 12.0,
+      "team_return": 3.0,
+      "mission_success": false,
+      "damage": 3.0
+    },
+    {
+      "seed": 30036,
+      "B": 8.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30037,
+      "B": 11.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30038,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30039,
+      "B": 8.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30040,
+      "B": 9.0,
+      "team_return": 4.5,
+      "mission_success": false,
+      "damage": 4.5
+    },
+    {
+      "seed": 30041,
+      "B": 8.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30042,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30043,
+      "B": 11.0,
+      "team_return": 4.0,
+      "mission_success": false,
+      "damage": 4.0
+    },
+    {
+      "seed": 30044,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30045,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30046,
+      "B": 12.0,
+      "team_return": 3.0,
+      "mission_success": false,
+      "damage": 3.0
+    },
+    {
+      "seed": 30047,
+      "B": 8.0,
+      "team_return": 9.0,
+      "mission_success": true,
+      "damage": 9.0
+    },
+    {
+      "seed": 30048,
+      "B": 11.0,
+      "team_return": 4.0,
+      "mission_success": false,
+      "damage": 4.0
+    },
+    {
+      "seed": 30049,
+      "B": 12.0,
+      "team_return": 2.0,
+      "mission_success": false,
+      "damage": 2.0
+    },
+    {
+      "seed": 30050,
+      "B": 12.0,
+      "team_return": 5.0,
+      "mission_success": false,
+      "damage": 5.0
+    },
+    {
+      "seed": 30051,
+      "B": 5.0,
+      "team_return": 7.5,
+      "mission_success": true,
+      "damage": 7.5
+    },
+    {
+      "seed": 30052,
+      "B": 8.0,
+      "team_return": 7.5,
+      "mission_success": false,
+      "damage": 7.5
+    },
+    {
+      "seed": 30053,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30054,
+      "B": 9.0,
+      "team_return": 11.0,
+      "mission_success": true,
+      "damage": 11.0
+    },
+    {
+      "seed": 30055,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30056,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30057,
+      "B": 12.0,
+      "team_return": 10.0,
+      "mission_success": false,
+      "damage": 10.0
+    },
+    {
+      "seed": 30058,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30059,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30060,
+      "B": 12.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30061,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30062,
+      "B": 8.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30063,
+      "B": 12.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30064,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30065,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30066,
+      "B": 11.0,
+      "team_return": 7.5,
+      "mission_success": false,
+      "damage": 7.5
+    },
+    {
+      "seed": 30067,
+      "B": 5.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30068,
+      "B": 8.0,
+      "team_return": 2.0,
+      "mission_success": false,
+      "damage": 2.0
+    },
+    {
+      "seed": 30069,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30070,
+      "B": 12.0,
+      "team_return": 3.0,
+      "mission_success": false,
+      "damage": 3.0
+    },
+    {
+      "seed": 30071,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30072,
+      "B": 11.0,
+      "team_return": 4.0,
+      "mission_success": false,
+      "damage": 4.0
+    },
+    {
+      "seed": 30073,
+      "B": 12.0,
+      "team_return": 2.0,
+      "mission_success": false,
+      "damage": 2.0
+    },
+    {
+      "seed": 30074,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30075,
+      "B": 8.0,
+      "team_return": 7.5,
+      "mission_success": false,
+      "damage": 7.5
+    },
+    {
+      "seed": 30076,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30077,
+      "B": 11.0,
+      "team_return": 10.0,
+      "mission_success": false,
+      "damage": 10.0
+    },
+    {
+      "seed": 30078,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30079,
+      "B": 12.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30080,
+      "B": 11.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30081,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30082,
+      "B": 8.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30083,
+      "B": 12.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30084,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30085,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30086,
+      "B": 11.0,
+      "team_return": 9.0,
+      "mission_success": false,
+      "damage": 9.0
+    },
+    {
+      "seed": 30087,
+      "B": 8.0,
+      "team_return": 10.0,
+      "mission_success": true,
+      "damage": 10.0
+    },
+    {
+      "seed": 30088,
+      "B": 11.0,
+      "team_return": 4.0,
+      "mission_success": false,
+      "damage": 4.0
+    },
+    {
+      "seed": 30089,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30090,
+      "B": 8.0,
+      "team_return": 7.5,
+      "mission_success": false,
+      "damage": 7.5
+    },
+    {
+      "seed": 30091,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30092,
+      "B": 12.0,
+      "team_return": 3.0,
+      "mission_success": false,
+      "damage": 3.0
+    },
+    {
+      "seed": 30093,
+      "B": 11.0,
+      "team_return": 10.0,
+      "mission_success": false,
+      "damage": 10.0
+    },
+    {
+      "seed": 30094,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30095,
+      "B": 8.0,
+      "team_return": 7.0,
+      "mission_success": false,
+      "damage": 7.0
+    },
+    {
+      "seed": 30096,
+      "B": 9.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30097,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    },
+    {
+      "seed": 30098,
+      "B": 9.0,
+      "team_return": 6.0,
+      "mission_success": false,
+      "damage": 6.0
+    },
+    {
+      "seed": 30099,
+      "B": 5.0,
+      "team_return": 12.0,
+      "mission_success": true,
+      "damage": 12.0
+    }
+  ]
+}

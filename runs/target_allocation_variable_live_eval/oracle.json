@@ -1,0 +1,220 @@
+{
+  "run": "oracle",
+  "agent_transitions": null,
+  "episodes": 30,
+  "seed": 10000,
+  "team_return": 14.233333333333333,
+  "mission_success": 0.5,
+  "rows": [
+    {
+      "seed": 10000,
+      "team_return": 16.0,
+      "mission_success": true,
+      "oracle_damage": 16.0,
+      "baseline_score": 12.0
+    },
+    {
+      "seed": 10001,
+      "team_return": 17.0,
+      "mission_success": false,
+      "oracle_damage": 17.0,
+      "baseline_score": 22.0
+    },
+    {
+      "seed": 10002,
+      "team_return": 17.0,
+      "mission_success": true,
+      "oracle_damage": 17.0,
+      "baseline_score": 10.0
+    },
+    {
+      "seed": 10003,
+      "team_return": 12.0,
+      "mission_success": true,
+      "oracle_damage": 12.0,
+      "baseline_score": 11.0
+    },
+    {
+      "seed": 10004,
+      "team_return": 18.0,
+      "mission_success": true,
+      "oracle_damage": 18.0,
+      "baseline_score": 17.0
+    },
+    {
+      "seed": 10005,
+      "team_return": 12.0,
+      "mission_success": false,
+      "oracle_damage": 12.0,
+      "baseline_score": 17.0
+    },
+    {
+      "seed": 10006,
+      "team_return": 11.5,
+      "mission_success": true,
+      "oracle_damage": 11.5,
+      "baseline_score": 11.0
+    },
+    {
+      "seed": 10007,
+      "team_return": 15.0,
+      "mission_success": false,
+      "oracle_damage": 15.0,
+      "baseline_score": 31.0
+    },
+    {
+      "seed": 10008,
+      "team_return": 16.0,
+      "mission_success": true,
+      "oracle_damage": 16.0,
+      "baseline_score": 10.0
+    },
+    {
+      "seed": 10009,
+      "team_return": 12.5,
+      "mission_success": false,
+      "oracle_damage": 12.5,
+      "baseline_score": 21.0
+    },
+    {
+      "seed": 10010,
+      "team_return": 15.0,
+      "mission_success": false,
+      "oracle_damage": 15.0,
+      "baseline_score": 31.0
+    },
+    {
+      "seed": 10011,
+      "team_return": 17.0,
+      "mission_success": false,
+      "oracle_damage": 17.0,
+      "baseline_score": 23.0
+    },
+    {
+      "seed": 10012,
+      "team_return": 12.0,
+      "mission_success": true,
+      "oracle_damage": 12.0,
+      "baseline_score": 10.0
+    },
+    {
+      "seed": 10013,
+      "team_return": 22.5,
+      "mission_success": true,
+      "oracle_damage": 22.5,
+      "baseline_score": 16.0
+    },
+    {
+      "seed": 10014,
+      "team_return": 15.0,
+      "mission_success": true,
+      "oracle_damage": 15.0,
+      "baseline_score": 9.0
+    },
+    {
+      "seed": 10015,
+      "team_return": 17.0,
+      "mission_success": false,
+      "oracle_damage": 17.0,
+      "baseline_score": 18.0
+    },
+    {
+      "seed": 10016,
+      "team_return": 18.0,
+      "mission_success": false,
+      "oracle_damage": 18.0,
+      "baseline_score": 25.0
+    },
+    {
+      "seed": 10017,
+      "team_return": 11.0,
+      "mission_success": false,
+      "oracle_damage": 11.0,
+      "baseline_score": 14.0
+    },
+    {
+      "seed": 10018,
+      "team_return": 12.0,
+      "mission_success": false,
+      "oracle_damage": 12.0,
+      "baseline_score": 14.0
+    },
+    {
+      "seed": 10019,
+      "team_return": 13.0,
+      "mission_success": true,
+      "oracle_damage": 13.0,
+      "baseline_score": 11.0
+    },
+    {
+      "seed": 10020,
+      "team_return": 9.0,
+      "mission_success": true,
+      "oracle_damage": 9.0,
+      "baseline_score": 9.0
+    },
+    {
+      "seed": 10021,
+      "team_return": 19.0,
+      "mission_success": true,
+      "oracle_damage": 19.0,
+      "baseline_score": 14.0
+    },
+    {
+      "seed": 10022,
+      "team_return": 18.0,
+      "mission_success": true,
+      "oracle_damage": 18.0,
+      "baseline_score": 18.0
+    },
+    {
+      "seed": 10023,
+      "team_return": 8.0,
+      "mission_success": false,
+      "oracle_damage": 8.0,
+      "baseline_score": 13.0
+    },
+    {
+      "seed": 10024,
+      "team_return": 12.0,
+      "mission_success": true,
+      "oracle_damage": 12.0,
+      "baseline_score": 5.0
+    },
+    {
+      "seed": 10025,
+      "team_return": 8.0,
+      "mission_success": false,
+      "oracle_damage": 8.0,
+      "baseline_score": 19.0
+    },
+    {
+      "seed": 10026,
+      "team_return": 24.0,
+      "mission_success": false,
+      "oracle_damage": 24.0,
+      "baseline_score": 26.0
+    },
+    {
+      "seed": 10027,
+      "team_return": 6.0,
+      "mission_success": true,
+      "oracle_damage": 6.0,
+      "baseline_score": 6.0
+    },
+    {
+      "seed": 10028,
+      "team_return": 6.0,
+      "mission_success": false,
+      "oracle_damage": 6.0,
+      "baseline_score": 10.0
+    },
+    {
+      "seed": 10029,
+      "team_return": 17.5,
+      "mission_success": false,
+      "oracle_damage": 17.5,
+      "baseline_score": 25.0
+    }
+  ]
+}

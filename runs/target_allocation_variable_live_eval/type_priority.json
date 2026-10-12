@@ -1,0 +1,8 @@
+{
+  "run": "type_priority",
+  "agent_transitions": null,
+  "episodes": 30,
+  "seed": 10000,
+  "team_return": 12.95,
+  "mission_success": 0.4
+}

@@ -3,12 +3,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-model="${1:-runs/train_10m/best.pt}"
-episodes="${2:-100}"
-out="${3:-runs/eval_10m}"
+model="${1:-runs/target_allocation_basic/best.pt}"
+episodes="${2:-30}"
+out="${3:-runs/eval_target_allocation}"
 
 exec python -m pointmass_rl evaluate \
-  --config configs/default.json \
+  --mode known --config "${CONFIG:-configs/target_allocation_variable.json}" \
   --model "$model" \
   --episodes "$episodes" \
   --seed 10000 \

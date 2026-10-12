@@ -1,0 +1,9 @@
+{
+  "run": "basic",
+  "agent_transitions": 1100000,
+  "checkpoint": "/home/core/hanhwa/combat/runs/target_allocation_variable_basic/checkpoint_1100000.pt",
+  "episodes": 30,
+  "seed": 10000,
+  "team_return": 12.116666666666667,
+  "mission_success": 0.26666666666666666
+}

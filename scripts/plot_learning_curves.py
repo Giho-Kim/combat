@@ -18,7 +18,7 @@ PANEL = "#f8fafc"
 GRID = "#e2e8f0"
 TEXT = "#0f172a"
 MUTED = "#64748b"
-MAPPO = "#2563eb"
+TARGET_ALLOCATION = "#2563eb"
 GREEDY = "#059669"
 LOOKAHEAD = "#7c3aed"
 NEAREST = "#64748b"
@@ -82,7 +82,7 @@ def style_axis(ax, percent=False):
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{100 * value:.0f}%"))
 
 
-def endpoint(ax, x, y, color=MAPPO):
+def endpoint(ax, x, y, color=TARGET_ALLOCATION):
     ax.annotate(f"{y[-1]:.3f}", (x[-1], y[-1]), xytext=(-5, 8),
                 textcoords="offset points", ha="right", color=color,
                 fontsize=9, fontweight="bold")
@@ -91,12 +91,12 @@ def endpoint(ax, x, y, color=MAPPO):
 def plot_evaluation(run_dir):
     rows = read_rows(run_dir / "training_evaluations.csv")
     policies = {name: [row for row in rows if row["policy"] == name]
-                for name in ("nearest", "type_priority", "heuristic", "mappo")}
+                for name in ("nearest", "type_priority", "heuristic", "target_coma_resolver")}
     lookahead_path = run_dir / "approx_dp_evaluation.json"
     lookahead = (json.loads(lookahead_path.read_text(encoding="utf-8"))["summary"]
                  if lookahead_path.exists() else None)
-    mappo = policies["mappo"]
-    x = values(mappo, "agent_transitions")
+    allocation = policies["target_coma_resolver"]
+    x = values(allocation, "agent_transitions")
     metrics = [
         ("team_return", "Return"),
         ("mission_success", "Mission success"),
@@ -104,10 +104,10 @@ def plot_evaluation(run_dir):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), layout="constrained")
     axes = axes.ravel()
     for ax, (key, title) in zip(axes, metrics):
-        y = (values(mappo, "score") / values(mappo, "baseline_score")
-             if key == "score_ratio" else values(mappo, key))
-        ax.plot(x, y, color=MAPPO, marker="o", markerfacecolor="white",
-                markeredgewidth=1.4, markersize=4.5, linewidth=2.4, label="MAPPO")
+        y = (values(allocation, "score") / values(allocation, "baseline_score")
+             if key == "score_ratio" else values(allocation, key))
+        ax.plot(x, y, color=TARGET_ALLOCATION, marker="o", markerfacecolor="white",
+                markeredgewidth=1.4, markersize=4.5, linewidth=2.4, label="Target Allocation")
         for name, label, color in (("nearest", "Nearest", NEAREST),
                                    ("type_priority", "Type priority", GREEDY),
                                    ("heuristic", "Greedy", GREEDY)):
@@ -129,20 +129,20 @@ def plot_evaluation(run_dir):
         if key in {"mission_success", "destroyed_fraction", "score_auc"}:
             ax.set_ylim(-.03, 1.05)
     b_ax = axes[-1]
-    task_keys = [key for key in mappo[0] if key.startswith("success_type1_")]
+    task_keys = [key for key in allocation[0] if key.startswith("success_type1_")]
     if task_keys:
         for task, color in zip(task_keys, ("#6b4c9a", "#2b8cbe", "#d64545")):
-            b_ax.plot(x, values(mappo, task), marker="o",
+            b_ax.plot(x, values(allocation, task), marker="o",
                       markerfacecolor="white", markersize=4, linewidth=2,
                       color=color, label=task.removeprefix("success_").replace("_", " "))
-        b_ax.set_title("MAPPO success by task", loc="left", pad=10)
+        b_ax.set_title("Target Allocation success by task", loc="left", pad=10)
     else:
         for threshold, color in zip((5, 8, 9, 11, 12),
                                     ("#6b4c9a", "#2b8cbe", "#34a853", "#f39c12", "#d64545")):
-            b_ax.plot(x, values(mappo, f"success_b{threshold}"), marker="o",
+            b_ax.plot(x, values(allocation, f"success_b{threshold}"), marker="o",
                       markerfacecolor="white", markersize=4, linewidth=2,
                       color=color, label=f"B={threshold}")
-        b_ax.set_title("MAPPO success by B", loc="left", pad=10)
+        b_ax.set_title("Target Allocation success by B", loc="left", pad=10)
     b_ax.set_xlabel("Agent transitions")
     b_ax.set_ylim(-.03, 1.05)
     style_axis(b_ax, percent=True)
@@ -175,13 +175,13 @@ def plot_training(run_dir):
     fig, axes = plt.subplots(1, 3, figsize=(18, 6.4), layout="constrained")
     axes = axes.ravel()
     for ax, (y, key, title) in zip(axes, metrics):
-        ax.scatter(x, y, s=7, alpha=.10, color=MAPPO, edgecolors="none")
+        ax.scatter(x, y, s=7, alpha=.10, color=TARGET_ALLOCATION, edgecolors="none")
         smooth, spread, window = rolling_stats(y, 50)
         smooth_x = x[window - 1:]
         ax.fill_between(smooth_x, smooth - spread, smooth + spread,
-                        color=MAPPO, alpha=.10, linewidth=0)
-        ax.plot(smooth_x, smooth, linewidth=2.5, color=MAPPO,
-                label=f"MAPPO ({window}-episode mean)")
+                        color=TARGET_ALLOCATION, alpha=.10, linewidth=0)
+        ax.plot(smooth_x, smooth, linewidth=2.5, color=TARGET_ALLOCATION,
+                label=f"Target Allocation ({window}-episode mean)")
         for name, label, color in (("nearest", "Nearest", NEAREST),
                                    ("type_priority", "Type priority", GREEDY),
                                    ("heuristic", "Greedy", GREEDY)):

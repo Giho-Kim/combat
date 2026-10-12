@@ -112,8 +112,9 @@ def lawnmower_waypoints(cell, config, position):
     x0 = margin+(cell % config.belief_grid)*width
     y0 = margin+(cell // config.belief_grid)*width
     half_angle = min(math.radians(config.sensor_fov_deg)/2, math.pi/2)
-    spacing = min(width/config.belief_subcells,
-                  config.sensor_range*math.sin(half_angle))
+    footprint_spacing = config.sensor_range*math.sin(half_angle)
+    spacing = (footprint_spacing*.5 if config.belief_representation == 'gaussian_uniform'
+               else min(width/config.belief_subcells, footprint_spacing))
     rows = max(2, math.ceil(width/spacing))
     ys = y0+(np.arange(rows)+.5)*width/rows
     if abs(position[1]-ys[-1]) < abs(position[1]-ys[0]):

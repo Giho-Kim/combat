@@ -16,32 +16,56 @@ import torch
 from torch import nn
 
 from .belief_env import BeliefWorld
+from .gaussian_belief import GAUSSIAN_FEATURES
 from .belief_policy import BeliefActorCritic, choose_action, stack_observations, subset
 from .env import Config, strike_action
 from .strike_ppo import _td_lambda_returns
 
 
 def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None):
-    payload = dict(architecture=model.architecture, hidden=model.hidden, mode='belief',
+    expected_features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
+    if model.features != expected_features or target.features != expected_features:
+        raise ValueError('Model feature count does not match the configured belief representation')
+    payload = dict(architecture=model.architecture, hidden=model.hidden, features=model.features, mode='belief',
                    config=asdict(config), state_dict=model.state_dict(),
                    target_state_dict=target.state_dict(), metadata=metadata,
                    training_settings=dict(shared_encoder=True, shared_optimizer=True,
                        critic_truth_access=False, update='Q warm-up with detached encoder; joint PPO/Q',
-                       belief='histogram unseen intensity + identified Gaussian tracks'))
+                       belief=('joint Gaussian scale/centre/type-count posterior + incidental detections + tracks'
+                               if config.belief_initial_intel else
+                               'histogram unseen intensity + identified Gaussian tracks'),
+                       controller='shared training/evaluation Dubins controller',
+                       sensor_model=('distance/angle cosine-squared probabilities; cell-integrated misses'
+                                     if config.belief_soft_detection else 'hard field of view'),
+                       initial_intel_association='position/type likelihood; no hidden formation labels'))
     if optimizer is not None:
         payload['optimizer_state_dict']=optimizer.state_dict()
+    if config.belief_representation == 'gaussian_uniform':
+        payload['training_settings'].update(
+            belief='per-reported-object Gaussian moments + initially uniform background + discovered tracks',
+            sensor_model='continuous distance/angle detection; Gaussian assumed-density miss update',
+            initial_intel_association=('position/type maximum-likelihood match, hard removal'
+                                     if config.belief_report_association == 'hard' else
+                                     'position/type likelihood with joint remaining-report subsets'),
+            background_mass=config.belief_background_mass,
+            background_redistribute=config.belief_background_redistribute,
+            background_update=config.belief_background_update,
+            report_association=config.belief_report_association,
+            background_type_prior=list(config.belief_background_type_prior))
     torch.save(payload,Path(path))
 
 
 def load_belief_checkpoint(path, config=None):
     payload=torch.load(path,map_location='cpu',weights_only=False)
-    if payload.get('architecture')!=BeliefActorCritic.architecture:
-        raise ValueError('Belief mode requires a belief checkpoint; legacy v15 uses --mode known')
-    saved=Config(**payload['config'])
-    config=config or saved
+    if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2'):
+        raise ValueError('Belief mode requires a belief checkpoint; Target Allocation uses --mode known')
+    config=config or Config(**payload['config'])
     if config.mode!='belief':
         raise ValueError('Belief checkpoint requires --mode belief')
-    model=BeliefActorCritic(payload['hidden'])
+    features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
+    if features != payload.get('features', 14):
+        raise ValueError('Checkpoint belief representation differs from config; train a new model for gaussian_uniform')
+    model=BeliefActorCritic(payload['hidden'], features=features)
     model.load_state_dict(payload['state_dict'])
     model.eval()
     return model,config,payload
@@ -159,7 +183,7 @@ def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
         raise ValueError(f'Existing experiment: {out}; choose a new output directory')
     out.mkdir(parents=True,exist_ok=True)
     config.save(out/'config.json')
-    model=BeliefActorCritic()
+    model=BeliefActorCritic(features=GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14)
     target=deepcopy(model).requires_grad_(False)
     optimizer=torch.optim.Adam(model.parameters(),lr=learning_rate,eps=1e-5)
     worlds=[BeliefWorld(config) for _ in range(n_envs)]

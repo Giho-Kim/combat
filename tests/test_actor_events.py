@@ -4,7 +4,7 @@ from unittest.mock import patch
 import torch
 
 from pointmass_rl.env import Config, World
-from pointmass_rl.strike_ppo import _actor_event, train_mappo, _ppo_update
+from pointmass_rl.strike_ppo import _actor_event, train_target_allocation, _ppo_update
 
 
 class ActorEventTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class ActorEventTests(unittest.TestCase):
             return _ppo_update(model, optimizers, batch, epochs, minibatch_size)
         for mode in ('all', 'events'):
             with patch('pointmass_rl.strike_ppo._ppo_update', side_effect=update):
-                model, _, _, _ = train_mappo(config, 18, seed=4, rollout_steps=6,
+                model, _, _, _ = train_target_allocation(config, 18, seed=4, rollout_steps=6,
                     epochs=1, n_envs=1, eval_interval=0, actor_samples=mode)
             self.assertEqual(model.training_settings['actor_sample_mode'], mode)
         full, sparse = batches

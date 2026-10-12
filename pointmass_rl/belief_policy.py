@@ -18,9 +18,9 @@ def subset(batch, indices):
 
 
 class BeliefEncoder(nn.Module):
-    def __init__(self, hidden):
+    def __init__(self, hidden, features=BELIEF_FEATURES):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(BELIEF_FEATURES, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
+        self.net = nn.Sequential(nn.Linear(features, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
 
     def forward(self, records, valid):
         records = torch.where(valid[..., None], records, torch.zeros_like(records))
@@ -30,11 +30,14 @@ class BeliefEncoder(nn.Module):
 class BeliefActorCritic(nn.Module):
     architecture = 'belief_target_coma_v1'
 
-    def __init__(self, hidden=64):
+    def __init__(self, hidden=64, features=BELIEF_FEATURES):
         super().__init__()
         self.hidden = hidden
+        self.features = features
+        if features != BELIEF_FEATURES:
+            self.architecture = 'belief_target_coma_gaussian_uniform_v2'
         # ONE module, ONE parameter set, used by both online actor and Q.
-        self.belief_encoder = BeliefEncoder(hidden)
+        self.belief_encoder = BeliefEncoder(hidden, features)
         self.actor_query = nn.Sequential(nn.Linear(hidden+12, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.actor_peer = nn.Sequential(nn.Linear(11, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.actor_attention = nn.ModuleList([PeerCrossAttention(hidden) for _ in range(2)])
