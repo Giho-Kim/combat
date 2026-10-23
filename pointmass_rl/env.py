@@ -111,6 +111,16 @@ class Config:
     belief_report_association: str = 'soft'
     belief_integration_order: int = 16  # Numerical integration only; not belief cells.
     belief_gaussian_min_sigma: float = 0.75
+    # Belief-policy stabilizers; the defaults reproduce the original training.
+    belief_logit_cap: float = 0.0  # >0: allowed actor logits within cap of the agent's best
+    belief_target_kl: float = 0.0  # >0: stop an update past this KL to the rollout policy
+    belief_separate_critic_encoder: bool = False  # Q loss cannot move the actor's encoder
+    # 'interval': re-decide every decision_interval steps (original). 'event':
+    # semi-MDP; re-decide when the task terminates, decision_interval at most.
+    belief_decision_rule: str = 'interval'
+    # Events ending a task under the 'event' rule: own task events
+    # (TaskEvent values) and shared interrupts ('track_new', 'contact').
+    belief_decision_events: tuple = ('arrive', 'leg_done', 'invalidate', 'release', 'track_new')
     detection_probability: float = 1.0
     formation_layout: str = 'legacy'
 
@@ -119,6 +129,18 @@ class Config:
             raise ValueError('mode must be known or belief')
         if self.belief_representation not in ('histogram', 'gaussian_uniform'):
             raise ValueError('Unknown belief_representation')
+        if not (np.isfinite(self.belief_logit_cap) and self.belief_logit_cap >= 0
+                and np.isfinite(self.belief_target_kl) and self.belief_target_kl >= 0):
+            raise ValueError('belief_logit_cap and belief_target_kl must be finite and nonnegative')
+        if type(self.belief_separate_critic_encoder) is not bool:
+            raise ValueError('belief_separate_critic_encoder must be a boolean')
+        if self.belief_decision_rule not in ('interval', 'event'):
+            raise ValueError('belief_decision_rule must be interval or event')
+        self.belief_decision_events = tuple(self.belief_decision_events)
+        from .task_automaton import TaskEvent
+        known = {event.value for event in TaskEvent} | {'track_new', 'contact'}
+        if not set(self.belief_decision_events) <= known:
+            raise ValueError(f'Unknown belief_decision_events {sorted(set(self.belief_decision_events)-known)}')
         if not np.isfinite(self.belief_background_mass) or self.belief_background_mass < 0:
             raise ValueError('belief_background_mass must be finite and nonnegative')
         type_prior = np.asarray(self.belief_background_type_prior, dtype=float)
@@ -228,10 +250,18 @@ class Config:
         data.pop("damage_credit_scale", None)
         for obsolete in ("penalty_time", "mission_failure_penalty", "mission_success_reward"):
             data.pop(obsolete, None)
-        return cls(**data)
+        return cls(**without_experiment_fields(data))
 
     def save(self, path):
         Path(path).write_text(json.dumps(asdict(self), indent=2) + "\n")
+
+
+def without_experiment_fields(data):
+    """Drop fields that only experimental branches recorded, when they are off."""
+    data = dict(data)
+    if data.pop("belief_automaton_input", "none") != "none":
+        raise ValueError("This config uses automaton-state policy inputs, which this version does not support")
+    return data
 
 
 class World:

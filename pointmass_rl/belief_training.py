@@ -18,15 +18,33 @@ from torch import nn
 from .belief_env import BeliefWorld
 from .gaussian_belief import GAUSSIAN_FEATURES
 from .belief_policy import BeliefActorCritic, choose_action, stack_observations, subset
-from .env import Config, strike_action
+from .env import Config, strike_action, without_experiment_fields
 from .strike_ppo import _td_lambda_returns
 
 
+def belief_features(config):
+    return GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
+
+
+def build_belief_model(config, hidden=64):
+    return BeliefActorCritic(hidden, features=belief_features(config), logit_cap=config.belief_logit_cap,
+                             separate_critic_encoder=config.belief_separate_critic_encoder)
+
+
+def _check_stabilizers(model, config):
+    if (model.logit_cap, model.separate_critic_encoder) != (config.belief_logit_cap,
+                                                           config.belief_separate_critic_encoder):
+        raise ValueError('Model logit cap or critic encoder does not match the config')
+
+
 def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None):
-    expected_features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
+    expected_features = belief_features(config)
     if model.features != expected_features or target.features != expected_features:
         raise ValueError('Model feature count does not match the configured belief representation')
+    _check_stabilizers(model, config)
+    _check_stabilizers(target, config)
     payload = dict(architecture=model.architecture, hidden=model.hidden, features=model.features, mode='belief',
+                   logit_cap=model.logit_cap, separate_critic_encoder=model.separate_critic_encoder,
                    config=asdict(config), state_dict=model.state_dict(),
                    target_state_dict=target.state_dict(), metadata=metadata,
                    training_settings=dict(shared_encoder=True, shared_optimizer=True,
@@ -59,13 +77,16 @@ def load_belief_checkpoint(path, config=None):
     payload=torch.load(path,map_location='cpu',weights_only=False)
     if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2'):
         raise ValueError('Belief mode requires a belief checkpoint; Target Allocation uses --mode known')
-    config=config or Config(**payload['config'])
+    config=config or Config(**without_experiment_fields(payload['config']))
     if config.mode!='belief':
         raise ValueError('Belief checkpoint requires --mode belief')
-    features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
+    features = belief_features(config)
     if features != payload.get('features', 14):
         raise ValueError('Checkpoint belief representation differs from config; train a new model for gaussian_uniform')
-    model=BeliefActorCritic(payload['hidden'], features=features)
+    model=BeliefActorCritic(payload['hidden'], features=features,
+                            logit_cap=payload.get('logit_cap', 0.),
+                            separate_critic_encoder=payload.get('separate_critic_encoder', False))
+    _check_stabilizers(model, config)
     model.load_state_dict(payload['state_dict'])
     model.eval()
     return model,config,payload
@@ -90,6 +111,31 @@ def baseline_action(obs, name, rng):
     return np.array(action),np.eye(mask.shape[1],dtype=np.float32)[action]
 
 
+def slot_capacity(obs, j):
+    """Agents a component can usefully take: one per region, remaining life per
+    identified object (the resolvers' rule)."""
+    return int(round(obs['beliefs'][j,8]*2)) if obs['beliefs'][j,10]>=.5 else 1
+
+
+def coordination_counts(obs, action):
+    """Counts for one step of executed choices of active agents.
+
+    over_capacity: agents beyond a component's capacity (duplicated effort).
+    decisions: active agents that chose freely this step.
+    """
+    active = np.flatnonzero(obs['active'] & obs['valid'][action])
+    chosen = np.asarray(action)[active]
+    over = sum(max(0, int((chosen==j).sum())-slot_capacity(obs,j)) for j in np.unique(chosen))
+    return dict(agent_steps=len(active), over_capacity=over,
+                decisions=int((obs['decision'] & obs['active']).sum()))
+
+
+def coordination_metrics(counts):
+    ratio = lambda a, b: float(a/b) if b else float('nan')
+    return dict(over_capacity_rate=ratio(counts['over_capacity'],counts['agent_steps']),
+                decision_rate=ratio(counts['decisions'],counts['agent_steps']))
+
+
 def evaluate_belief(model, config, episodes=30, seed=10000, resolver='none', baseline=None,
                     replay_frames=None):
     rows=[]
@@ -101,14 +147,18 @@ def evaluate_belief(model, config, episodes=30, seed=10000, resolver='none', bas
             from .belief_report import frame
             replay_frames.append(frame(world,obs))
         rng=np.random.default_rng(seed+episode)
+        counts={}
         while not world.done:
             action,prob=(baseline_action(obs,baseline,rng) if baseline else
                          choose_action(model,obs,deterministic=True,resolver=resolver))
+            for key,value in coordination_counts(obs,action).items():
+                counts[key]=counts.get(key,0)+value
             obs,_,_,_,metrics=world.step(strike_action(action),prob)
             if recording:
                 replay_frames.append(frame(world,obs,action))
-        rows.append(dict(seed=seed+episode,**metrics))
-    keys=('team_return','discounted_team_return','mission_success','discovery_fraction','discovered_objects')
+        rows.append(dict(seed=seed+episode,**metrics,**coordination_metrics(counts)))
+    keys=('team_return','discounted_team_return','mission_success','discovery_fraction','discovered_objects',
+          'over_capacity_rate','decision_rate')
     return {key:float(np.mean([r[key] for r in rows])) for key in keys},rows
 
 
@@ -121,8 +171,15 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
+def policy_kl(old_probs, distribution, decision):
+    """Mean KL(rollout policy || current policy) over decision rows."""
+    log_new = torch.where(old_probs > 0, distribution.logits, torch.zeros_like(distribution.logits))
+    log_old = torch.where(old_probs > 0, old_probs.log(), torch.zeros_like(old_probs))
+    return (old_probs*(log_old-log_new)).sum(-1)[decision].mean()
+
+
 def update_model(model, target, optimizer, batch, action, old_logp, probs, returns,
-                 epochs, critic_epochs, width, entropy_coef, clip, coma_advantage='q'):
+                 epochs, critic_epochs, width, entropy_coef, clip, coma_advantage='q', target_kl=0.):
     q_losses=[]
     size=len(action)
     for _ in range(critic_epochs):
@@ -141,14 +198,24 @@ def update_model(model, target, optimizer, batch, action, old_logp, probs, retur
         chosen=advantage[batch['decision']]
         if len(chosen):
             advantage=(advantage-chosen.mean())/(chosen.std(unbiased=False)+1e-5)
-    actor_losses=[]
+    actor_losses,kls=[],[]
+    stopped=False
     for _ in range(epochs):
+        if stopped:
+            break
         for ix in torch.randperm(size).split(width):
             obs=subset(batch,ix)
             decision=obs['decision']
             if not decision.any():
                 continue
             distribution=model.distribution(obs)
+            # Measures every change since the rollout, including the shared
+            # encoder's response to Q loss, which PPO clipping cannot see.
+            kl=float(policy_kl(probs[ix],distribution,decision).detach())
+            kls.append(kl)
+            if target_kl and kl>target_kl:
+                stopped=True
+                break
             ratio=(distribution.log_prob(action[ix])-old_logp[ix]).exp()
             surrogate=torch.minimum(ratio*advantage[ix],ratio.clamp(1-clip,1+clip)*advantage[ix])
             actor_loss=-surrogate[decision].mean()-entropy_coef*distribution.entropy()[decision].mean()
@@ -161,7 +228,9 @@ def update_model(model, target, optimizer, batch, action, old_logp, probs, retur
             target.soft_update(model)
             actor_losses.append(float(actor_loss.detach()))
     return dict(q_loss=float(np.mean(q_losses)) if q_losses else 0.,
-                actor_loss=float(np.mean(actor_losses)) if actor_losses else 0.)
+                actor_loss=float(np.mean(actor_losses)) if actor_losses else 0.,
+                policy_kl=float(np.max(kls)) if kls else 0., actor_steps=len(actor_losses),
+                kl_stopped=stopped)
 
 
 def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
@@ -183,7 +252,7 @@ def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
         raise ValueError(f'Existing experiment: {out}; choose a new output directory')
     out.mkdir(parents=True,exist_ok=True)
     config.save(out/'config.json')
-    model=BeliefActorCritic(features=GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14)
+    model=build_belief_model(config)
     target=deepcopy(model).requires_grad_(False)
     optimizer=torch.optim.Adam(model.parameters(),lr=learning_rate,eps=1e-5)
     worlds=[BeliefWorld(config) for _ in range(n_envs)]
@@ -252,7 +321,8 @@ def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
         batch={k:torch.cat([o[k] for o in stored]) for k in stored[0]}
         diagnostics=update_model(model,target,optimizer,batch,torch.cat(actions),torch.cat(logps),
                                  torch.cat(probabilities),torch.from_numpy(returns.flatten()),
-                                 epochs,critic_epochs,minibatch_size,entropy_coef,policy_clip,coma_advantage)
+                                 epochs,critic_epochs,minibatch_size,entropy_coef,policy_clip,coma_advantage,
+                                 config.belief_target_kl)
         metadata['agent_transitions']=completed
         update_rows.append(dict(agent_transitions=completed,**diagnostics))
         print(f'Update {completed}/{total_steps}: {diagnostics}',flush=True)

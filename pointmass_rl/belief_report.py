@@ -37,8 +37,7 @@ def frame(world, observation, chosen=None):
                 background_search_mass=metrics.get('background_search_mass'),
                 all_reported_found_probability=metrics.get('all_reported_found_probability'),
                 goals=hidden.last_goal.tolist(),
-                sweeping=[bool(nav and nav['sweeping'] and belief.valid[nav['component']])
-                          for nav in world.navigation],
+                sweeping=(world.tasks.sweeping(belief.valid) >= 0).tolist(),
                 active=hidden.agent_active.tolist(), components=components,
                 chosen=(None if chosen is None else np.asarray(chosen, dtype=int).tolist()),
                 truth=truth, formation_centers=hidden.formation_centers.tolist(),

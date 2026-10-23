@@ -64,6 +64,29 @@ python -m pointmass_rl evaluate --mode belief \
 
 Belief 학습은 seed 7, 환경 8개, rollout 64, actor·critic epochs 4, minibatch 32입니다. Replay에서 belief 변화와 발견된 표적을 볼 수 있으며 실제 표적 위치는 토글로 확인합니다. `--no-lawnmower`는 평가의 lawnmower 탐색을 끄고 Dubins 이동을 유지합니다.
 
+### 사건 기반 재결정
+
+`decision_interval`은 한 번 고른 후보를 몇 초 동안 유지할지를 정합니다. 기본값은 1(매초 재결정)입니다. 이 값이면 학습 초기의 거의 균일한 정책이 매 step 목표를 바꾸므로 작업을 끝내지 못하고 보상도 얻지 못합니다.
+
+`belief_decision_rule: "event"`는 agent가 맡은 작업이 끝났을 때, 또는 새 정보가 들어왔을 때만 다시 결정하게 합니다(semi-MDP).
+
+- 작업 종료로 보는 사건: 목적지 도착, lawnmower 한 구간 완료, 선택한 대상의 무효화, strike 완료
+- 새 정보로 보는 사건: 새 객체 발견(`track_new`)
+- 이 사건들은 `belief_decision_events`로 바꿀 수 있습니다.
+- `decision_interval`은 이 규칙에서 선택 유지 시간의 상한입니다.
+- agent별 작업 진행 상태는 `pointmass_rl/task_automaton.py`가 관리하고, 위 사건들을 발생시킵니다.
+
+```bash
+CONFIG=configs/belief_event.json LEARNING_RATE=1.5e-4 \
+  bash scripts/train_belief_target_allocation.sh 3000000 runs/belief_event
+```
+
+- **learning rate:** 사건 기반 규칙에서는 1.5e-4를 권장합니다. 기본값 5e-4에서는 정책이 약 10 episode 만에 굳어 버려서 seed마다 결과가 크게 달라졌습니다.
+- **비교용 설정:** `configs/belief_interval100.json`은 100초마다 재결정하는 고정 주기 설정입니다.
+- **결과:** [docs/event_based_decisions.md](docs/event_based_decisions.md)에 정리했습니다.
+- **학습 안정화 옵션** (기본값은 모두 꺼짐): `belief_logit_cap`, `belief_target_kl`, `belief_separate_critic_encoder`.
+- **평가 지표:** 평가 결과에 중복 선택률(`over_capacity_rate`)과 결정 빈도(`decision_rate`)가 함께 기록됩니다.
+
 ### Polygon 탐색 데모
 
 데모는 같은 belief에서 사다리꼴 polygon 후보를 생성하고, 배정된 polygon을 100 m 간격 lawnmower와 Dubins 경로로 탐색합니다. 탐색 중 polygon은 유지하고 나머지 후보를 갱신합니다. 발견 후 표적 선택·처리·드론 consume까지 포함합니다.

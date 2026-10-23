@@ -11,6 +11,7 @@ from pointmass_rl.belief_env import BeliefWorld, TargetBelief
 from pointmass_rl.belief_policy import BeliefActorCritic, choose_action, stack_observations
 from pointmass_rl.belief_training import load_belief_checkpoint, save_belief_checkpoint, train_belief
 from pointmass_rl.env import Config, strike_action
+from pointmass_rl.task_automaton import TaskEvent
 
 
 class ReportBeliefTests(unittest.TestCase):
@@ -164,8 +165,9 @@ class ReportBeliefTests(unittest.TestCase):
         w = BeliefWorld(self.config())
         w.reset(7)
         slot = int(np.flatnonzero(w.belief.valid[:w.belief.cells])[0])
-        w.chosen[0] = slot
-        w.navigation[0] = dict(component=slot,sweeping=True)
+        w.tasks.commit(np.arange(w.n) == 0, np.full(w.n, slot), 0)
+        w.tasks.fire(0, TaskEvent.SELECT, slot)
+        w.tasks.fire(0, TaskEvent.SWEEP)
         mask, decision = w.action_mask()
         self.assertTrue(decision[0])
         self.assertGreater(mask[0].sum(),1)
