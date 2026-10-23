@@ -16,6 +16,11 @@ from .navigation import DubinsPath, lawnmower_waypoints, point_path
 from .belief_intel import ReportPosterior
 from .belief_sensor import detection_probabilities, cell_detection_probabilities
 from .gaussian_belief import GaussianTargetBelief
+from .task_automaton import TaskAutomata, TaskEvent, TaskPhase
+
+# Public belief changes that may interrupt tasks under the event decision rule:
+# a newly identified object, or the first valid track after none.
+INTERRUPTS = ('track_new', 'contact')
 
 
 BELIEF_FEATURES = 14
@@ -228,12 +233,34 @@ class BeliefWorld:
         self.belief = belief_class(self.c, w.initial_intel)
         self.previous = np.zeros((self.n, self.action_count), dtype=np.float32)
         self.previous_choice = np.zeros_like(self.previous)
-        self.chosen = np.full(self.n, -1, dtype=int)
-        self.next_decision = np.zeros(self.n, dtype=int)
+        events = set(self.c.belief_decision_events)
+        self.tasks = TaskAutomata(self.n, [e for e in TaskEvent if e.value in events])
+        self.interrupts = events & set(INTERRUPTS)
+        # Executor geometry only; the task phase lives in self.tasks.
         self.navigation = [None for _ in range(self.n)]
         self.first_detection = None
+        self.known_tracks = self.valid_tracks = 0
         self._sense()
+        self._sync_tasks()
         return self.observation()
+
+    def _sync_tasks(self):
+        """World changes become task events; new public information interrupts tasks."""
+        self.tasks.sync(self._world.agent_active, self.locked_components())
+        b = self.belief
+        valid = int(b.valid[b.cells:b.cells + len(b.tracks)].sum())
+        news = set()
+        if len(b.tracks) > self.known_tracks:
+            news.add('track_new')
+        if self.valid_tracks == 0 and valid > 0:
+            news.add('contact')
+        self.known_tracks, self.valid_tracks = len(b.tracks), valid
+        if news & self.interrupts:
+            self.tasks.interrupt()
+
+    @property
+    def chosen(self):
+        return self.tasks.held
 
     def _visibility(self, points):
         w = self._world
@@ -318,39 +345,13 @@ class BeliefWorld:
         return result
 
     def action_mask(self):
-        w = self._world
-        mask = np.broadcast_to(self.belief.valid, (self.n, self.action_count)).copy()
-        locks = self.locked_components()
-        sweeping = np.full(self.n, -1, dtype=int)
-        for i, nav in enumerate(self.navigation):
-            if (w.agent_active[i] and nav is not None and nav['sweeping']
-                    and self.belief.valid[nav['component']]):
-                sweeping[i] = nav['component']
-        for i in np.flatnonzero(sweeping >= 0):
-            j = sweeping[i]
-            mask[:, j] = False
-            mask[i, j] = True
-        for j in range(self.belief.cells, self.belief.cells + len(self.belief.tracks)):
-            life = int(round(self.belief.records[j, 8]*2))
-            occupied = (locks == j).sum()
-            if occupied >= life:
-                mask[:, j] = locks == j
-        decision = w.agent_active & (locks < 0)
-        for i in range(self.n):
-            held = self.chosen[i]
-            if locks[i] >= 0:
-                mask[i] = False
-                mask[i, locks[i]] = True
-            elif held >= 0 and mask[i, held] and ((sweeping[i] >= 0 and not self.c.belief_initial_intel)
-                                                or self.c.commit_target or w.t < self.next_decision[i]):
-                mask[i] = False
-                mask[i, held] = True
-                decision[i] = False
-            if not w.agent_active[i] or not mask[i].any():
-                mask[i] = False
-                mask[i, 0] = True  # Finite categorical; invalid component is an idle action.
-                decision[i] = False
-        return mask, decision
+        b = self.belief
+        tracks = range(b.cells, b.cells + len(b.tracks))
+        track_life = [int(round(b.records[j, 8]*2)) for j in tracks]
+        return self.tasks.action_mask(b.valid, track_life, b.cells, self._world.t,
+                                      initial_intel=self.c.belief_initial_intel,
+                                      commit_target=self.c.commit_target,
+                                      decision_rule=self.c.belief_decision_rule)
 
     def observation(self):
         w = self._world
@@ -372,7 +373,10 @@ class BeliefWorld:
         w, c = self._world, self.c
         radius = c.belief_turn_radius
         budget = c.strike_speed*c.dt
+        tasks = self.tasks
         if not self.belief.valid[component]:
+            if self.navigation[i] is not None:
+                tasks.fire(i, TaskEvent.INVALIDATE)
             self.navigation[i] = None
             w.last_goal[i] = w.pos[i]
             return
@@ -381,30 +385,32 @@ class BeliefWorld:
         nav = self.navigation[i]
         if nav is None or nav['component'] != component:
             nav = dict(component=int(component), goal=goal.copy(), path=None,
-                       sweeping=False, waypoints=[], index=0, arrived=False)
+                       waypoints=[], index=0)
             self.navigation[i] = nav
+            tasks.fire(i, TaskEvent.SELECT, int(component))
         elif (not is_region or not c.belief_lawnmower
-              or (c.belief_initial_intel and not nav['sweeping'])) and np.linalg.norm(goal-nav['goal']) > c.strike_range*.25:
+              or (c.belief_initial_intel and tasks.motion[i] != TaskPhase.SWEEPING)) and np.linalg.norm(goal-nav['goal']) > c.strike_range*.25:
             nav['goal'] = goal.copy()
             nav['path'] = None
-            nav['arrived'] = False
+            tasks.fire(i, TaskEvent.RETARGET)
 
         if not is_region and w.strike_participants[:, i].any():
             w.last_goal[i] = nav['goal']
             return
 
-        if nav['arrived']:
+        if tasks.motion[i] == TaskPhase.ARRIVED:
             # Stay at an unchanged destination until sensing or selection
             # supplies a new one. Do not manufacture a departure/return loop.
             w.last_goal[i] = nav['goal']
             return
 
         while budget > 1e-10:
-            if nav['sweeping']:
+            if tasks.motion[i] == TaskPhase.SWEEPING:
                 if nav['index'] >= len(nav['waypoints']):
                     # A complete pass does not erase any remaining belief.
                     nav['waypoints'] = lawnmower_waypoints(component, c, w.pos[i])
                     nav['index'] = 0
+                    tasks.fire(i, TaskEvent.PASS_DONE)
                 destination, end_heading = nav['waypoints'][nav['index']]
             else:
                 destination, end_heading = nav['goal'], None
@@ -447,14 +453,15 @@ class BeliefWorld:
             nav['path'] = None
             if not is_region or not c.belief_lawnmower:
                 # Resolve arrival/sensing this step before the next arc.
-                nav['arrived'] = True
+                tasks.fire(i, TaskEvent.ARRIVE)
                 break
-            if not nav['sweeping']:
-                nav['sweeping'] = True
+            if tasks.motion[i] != TaskPhase.SWEEPING:
+                tasks.fire(i, TaskEvent.SWEEP)
                 nav['waypoints'] = lawnmower_waypoints(component, c, w.pos[i])
                 nav['index'] = 0
             else:
                 nav['index'] += 1
+                tasks.fire(i, TaskEvent.LEG_DONE)
 
     def step(self, action, probabilities=None):
         w, c = self._world, self.c
@@ -476,8 +483,8 @@ class BeliefWorld:
         else:
             self.previous = np.eye(self.action_count, dtype=np.float32)[proposed]
         self.previous_choice = np.eye(self.action_count, dtype=np.float32)[proposed]
-        self.chosen[decision] = proposed[decision]
-        self.next_decision[decision] = w.t+c.decision_interval
+        self.tasks.events.clear()
+        self.tasks.commit(decision, proposed, w.t+c.decision_interval)
         active_before = w.agent_active.copy()
         old_pos = w.pos.copy()
         raw = np.full(self.n, -1, dtype=int)
@@ -511,8 +518,14 @@ class BeliefWorld:
             w.first_score_step = w.t
         w.score_area += w.score/max(1,w.formation_one_initial_score)
         self._sense()
+        self._sync_tasks()
         w.done = w.t >= c.horizon
         return self.observation(), reward, False, w.done, self.metrics()
+
+    def unseen_expected_count(self):
+        if isinstance(self.belief, GaussianTargetBelief):
+            return float(self.belief.remaining_types.sum()+self.belief.background_mass)
+        return float(self.belief.weights.sum())
 
     def metrics(self):
         w = self._world
@@ -521,9 +534,7 @@ class BeliefWorld:
                     success_threshold=float(w.formation_one_initial_score),
                     discovery_fraction=float(w.discovered[w.target_exists].mean()),
                     discovered_objects=len(self.belief.tracks),
-                    unseen_expected_count=(float(self.belief.remaining_types.sum()+self.belief.background_mass)
-                                           if isinstance(self.belief, GaussianTargetBelief)
-                                           else float(self.belief.weights.sum())),
+                    unseen_expected_count=self.unseen_expected_count(),
                     first_detection_step=self.first_detection, steps=w.t)
         if self.belief.report is not None:
             result.update(reported_unseen_expected_count=float(self.belief.report.remaining_types.sum()),

@@ -10,5 +10,6 @@ exec "${PYTHON_BIN:-python}" -m pointmass_rl train \
   --rollout-steps "${ROLLOUT_STEPS:-64}" \
   --epochs "${EPOCHS:-4}" --critic-epochs "${CRITIC_EPOCHS:-4}" \
   --minibatch-size "${MINIBATCH_SIZE:-32}" \
+  --learning-rate "${LEARNING_RATE:-5e-4}" --entropy-coef "${ENTROPY_COEF:-0.01}" \
   --eval-interval "${EVAL_INTERVAL:-100000}" \
   --eval-episodes "${EVAL_EPISODES:-30}" --eval-seed 10000

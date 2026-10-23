@@ -30,10 +30,12 @@ class BeliefEncoder(nn.Module):
 class BeliefActorCritic(nn.Module):
     architecture = 'belief_target_coma_v1'
 
-    def __init__(self, hidden=64, features=BELIEF_FEATURES):
+    def __init__(self, hidden=64, features=BELIEF_FEATURES, logit_cap=0., separate_critic_encoder=False):
         super().__init__()
         self.hidden = hidden
         self.features = features
+        self.logit_cap = float(logit_cap)
+        self.separate_critic_encoder = bool(separate_critic_encoder)
         if features != BELIEF_FEATURES:
             self.architecture = 'belief_target_coma_gaussian_uniform_v2'
         # ONE module, ONE parameter set, used by both online actor and Q.
@@ -44,6 +46,8 @@ class BeliefActorCritic(nn.Module):
         self.actor_head = nn.Linear(hidden, 1)
         nn.init.orthogonal_(self.actor_head.weight, gain=.01)
         nn.init.zeros_(self.actor_head.bias)
+        if self.separate_critic_encoder:
+            self.q_belief_encoder = BeliefEncoder(hidden, features)
         self.q_drone = nn.Sequential(nn.Linear(9, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.q_time = nn.Linear(1, hidden)
         self.q_target_reads = nn.ModuleList([RelationAttention(hidden) for _ in range(2)])
@@ -75,7 +79,16 @@ class BeliefActorCritic(nn.Module):
                 & ~torch.eye(n,dtype=torch.bool,device=d.device)[None,:,None,:])
         for attention in self.actor_attention:
             query = attention(query,peer,mask)
-        return self.actor_head(query).squeeze(-1)
+        logits = self.actor_head(query).squeeze(-1)
+        if self.logit_cap:
+            # Softmax ignores a common shift, so raw logits can drift jointly;
+            # capping them directly saturates every option to the same value.
+            # Measure each option from the agent's best allowed one instead.
+            allowed = obs['mask'].bool()
+            best = logits.masked_fill(~allowed, -torch.inf).amax(-1, keepdim=True)
+            best = torch.where(torch.isfinite(best), best, torch.zeros_like(best)).detach()
+            logits = self.logit_cap*torch.tanh((logits-best)/self.logit_cap)
+        return logits
 
     def distribution(self, obs):
         return Categorical(logits=self.actor_logits(obs).masked_fill(~obs['mask'], -torch.inf))
@@ -83,8 +96,10 @@ class BeliefActorCritic(nn.Module):
     def joint_q(self, obs, action, detach_encoder=False):
         drones = obs['drones']
         alive, valid = drones[...,2]>.5, obs['valid']
-        tokens = self.encode_beliefs(obs)
-        if detach_encoder:
+        tokens = (self.q_belief_encoder(obs['beliefs'], obs['valid']) if self.separate_critic_encoder
+                  else self.encode_beliefs(obs))
+        # Detaching protects a shared encoder; a critic-only encoder must learn.
+        if detach_encoder and not self.separate_critic_encoder:
             tokens = tokens.detach()
         n,k = drones.shape[1],tokens.shape[1]
         if action.shape != drones.shape[:2] or torch.any((action<0)|(action>=k)):
