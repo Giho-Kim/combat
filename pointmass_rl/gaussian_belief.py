@@ -80,17 +80,30 @@ class GaussianTargetBelief:
             if (len(counts) != 3 or any(int(x) != x or x < 0 for x in counts)
                     or not 1 <= sum(counts) <= config.n_targets):
                 raise ValueError('Initial report requires valid type counts')
-            # E[sigma**2] of the public log-normal scale prior, plus the
-            # marginal variance of a member uniformly spread in a disk.
-            variance = (initial_intel['sigma_hint']**2
-                        * np.exp(2*initial_intel['log_sigma_std']**2)
-                        + initial_intel['member_radius']**2/4)
-            variance = max(variance, config.belief_gaussian_min_sigma**2)
-            for typ, count in enumerate(counts, 1):
-                for _ in range(int(count)):
-                    self.components.append(dict(
-                        mean=np.asarray(initial_intel['position'], dtype=float).copy(),
-                        covariance=np.eye(2)*variance, type=typ, remaining=1.))
+            reports = initial_intel.get('objects')
+            if reports is None:
+                # Read older report packets without changing their meaning.
+                reports = [dict(position=initial_intel['position'], type=typ,
+                                sigma_hint=initial_intel['sigma_hint'],
+                                log_sigma_std=initial_intel['log_sigma_std'],
+                                member_radius=initial_intel['member_radius'])
+                           for typ, count in enumerate(counts, 1) for _ in range(int(count))]
+            reported_counts = np.zeros(3, dtype=int)
+            for report in reports:
+                typ = int(report['type'])
+                mean = np.asarray(report['position'], dtype=float)
+                sigma, spread = float(report['sigma_hint']), float(report['log_sigma_std'])
+                if (typ not in (1, 2, 3) or mean.shape != (2,) or not np.isfinite(mean).all()
+                        or not np.isfinite(sigma) or sigma <= 0
+                        or not np.isfinite(spread) or not 0 <= spread <= 1.5):
+                    raise ValueError('Invalid individual initial report')
+                reported_counts[typ-1] += 1
+                variance = sigma**2*np.exp(2*spread**2) + report.get('member_radius', 0.)**2/4
+                self.components.append(dict(mean=mean.copy(),
+                    covariance=np.eye(2)*max(variance, config.belief_gaussian_min_sigma**2),
+                    type=typ, remaining=1.))
+            if not np.array_equal(reported_counts, counts):
+                raise ValueError('Individual reports must match reported type counts')
         self.background_mass = config.belief_background_mass
         self.background_type_prior = np.asarray(config.belief_background_type_prior, dtype=float)
         self.background_type_prior = self.background_type_prior/self.background_type_prior.sum()

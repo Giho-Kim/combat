@@ -28,7 +28,7 @@ class ReportBeliefTests(unittest.TestCase):
                     sigma_hint=10., log_sigma_std=.5, member_radius=6.5)
 
     def test_report_precedes_displacement_and_preserves_second_formation(self):
-        c = self.config()
+        c = self.config(belief_intel_sigma=10.)
         offsets, scales = [], []
         for seed in range(20):
             old, new = BeliefWorld(replace(c,belief_initial_intel=False)), BeliefWorld(c)

@@ -38,13 +38,34 @@ class RelationAttention(nn.Module):
         return query + self.update(torch.cat((query, message), dim=-1))
 
 
+class TypeSelfAttention(nn.Module):
+    """One pre-normalized self-attention/FFN block with entity masking."""
+    def __init__(self, hidden, heads):
+        super().__init__()
+        self.block = nn.TransformerEncoderLayer(hidden, heads, 2 * hidden,
+            dropout=0.0, activation=torch.nn.functional.silu,
+            batch_first=True, norm_first=True)
+
+    def forward(self, tokens, valid):
+        shape = tokens.shape
+        tokens = tokens.reshape(-1, shape[-2], shape[-1])
+        valid = valid.reshape(-1, shape[-2])
+        tokens = tokens.masked_fill(~valid.unsqueeze(-1), 0)
+        safe = valid.clone()
+        safe[~safe.any(-1), 0] = True
+        result = self.block(tokens, src_key_padding_mask=~safe)
+        return result.masked_fill(~valid.unsqueeze(-1), 0).reshape(shape)
+
+
 class GraphQBody(nn.Module):
     """All parameter shapes are independent of drone/target slot counts."""
-    def __init__(self, hidden=64, heads=4, rounds=2):
+    def __init__(self, hidden=64, heads=4, rounds=2, self_attention=False):
         super().__init__()
         self.drone_encoder = nn.Sequential(nn.Linear(6, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.target_encoder = nn.Sequential(nn.Linear(6, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.time_encoder = nn.Linear(1, hidden)
+        self.drone_self = TypeSelfAttention(hidden, heads) if self_attention else None
+        self.target_self = TypeSelfAttention(hidden, heads) if self_attention else None
         self.target_reads = nn.ModuleList([RelationAttention(hidden, heads) for _ in range(rounds)])
         self.drone_reads = nn.ModuleList([RelationAttention(hidden, heads) for _ in range(rounds)])
         self.team_query = nn.Parameter(torch.zeros(hidden))
@@ -65,7 +86,7 @@ class GraphQBody(nn.Module):
             raise ValueError('joint_action contains an invalid target')
         return n, t
 
-    def forward(self, state, joint_action):
+    def encode(self, state, joint_action):
         n, t = self.dimensions(state, joint_action)
         drone_end, target_end = 1 + 4 * n, 1 + 4 * n + 6 * t
         drones = state[..., 1:drone_end].reshape(*state.shape[:-1], n, 4)
@@ -87,10 +108,17 @@ class GraphQBody(nn.Module):
         d, target = self.drone_encoder(drones), self.target_encoder(targets)
         time = self.time_encoder(state[..., :1])
         d, target = d + time.unsqueeze(-2), target + time.unsqueeze(-2)
+        if self.drone_self is not None:
+            d = self.drone_self(d, alive)
+            target = self.target_self(target, exists)
         reverse = torch.cat((edges[..., :3], -edges[..., 3:]), -1).transpose(-3, -2)
         for target_read, drone_read in zip(self.target_reads, self.drone_reads):
             target = target_read(target, d, edges, mask)
             d = drone_read(d, target, reverse, mask.transpose(-1, -2))
+        return d,target,time,alive,exists,targets
+
+    def forward(self, state, joint_action):
+        d,target,time,alive,exists,_=self.encode(state,joint_action)
         tokens = torch.cat((d, target), dim=-2)
         valid = torch.cat((alive, exists), dim=-1)
         query = time + self.team_query

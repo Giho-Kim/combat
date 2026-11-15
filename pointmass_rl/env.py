@@ -99,7 +99,10 @@ class Config:
     belief_turn_radius: float = 2.0  # Map units; 200 m in the game scale.
     belief_search_margin: float = 10.0  # 1 km on each side of the 10 km map.
     belief_lawnmower: bool = True
+    belief_exploration_only: bool = False
+    belief_sweep_spacing: float = 1.0  # 100 m lanes for polygon exploration.
     belief_initial_intel: bool = False
+    belief_report_min_separation: float = 0.0  # Report sites versus unreported formation, map units.
     belief_intel_sigma: float = 10.0  # Nominal per-axis centre error, in 100 m units.
     belief_intel_log_sigma_std: float = 0.5  # Uncertainty about that error scale.
     belief_soft_detection: bool = False  # Old checkpoints retain hard sensor footprints.
@@ -115,6 +118,13 @@ class Config:
     formation_layout: str = 'legacy'
 
     def __post_init__(self):
+        if type(self.belief_exploration_only) is not bool:
+            raise ValueError('belief_exploration_only must be a boolean')
+        if not np.isfinite(self.belief_sweep_spacing) or self.belief_sweep_spacing <= 0:
+            raise ValueError('belief_sweep_spacing must be positive')
+        if self.belief_exploration_only and (self.mode != 'belief' or
+                self.belief_representation != 'gaussian_uniform' or not self.belief_lawnmower):
+            raise ValueError('Polygon exploration requires belief mode, gaussian_uniform and lawnmower')
         if self.mode not in ('known', 'belief'):
             raise ValueError('mode must be known or belief')
         if self.belief_representation not in ('histogram', 'gaussian_uniform'):
@@ -190,6 +200,8 @@ class Config:
                     "target_member_min_spacing")
         if any(getattr(self, key) <= 0 for key in positive):
             raise ValueError("physical scales and ranges must be positive")
+        if not np.isfinite(self.belief_report_min_separation) or self.belief_report_min_separation < 0:
+            raise ValueError('belief_report_min_separation must be finite and nonnegative')
         if self.target_motion_scale < 0:
             raise ValueError("target_motion_scale must be nonnegative")
         if not 0 <= self.strike_probability <= 1:

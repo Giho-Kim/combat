@@ -22,6 +22,21 @@ from .env import Config, strike_action
 from .strike_ppo import _td_lambda_returns
 
 
+def make_world(config):
+    if config.belief_exploration_only:
+        from .exploration import PolygonExplorationWorld
+        return PolygonExplorationWorld(config)
+    return BeliefWorld(config)
+
+
+def make_model(config, hidden=64):
+    if config.belief_exploration_only:
+        from .exploration import ExplorationActorCritic
+        return ExplorationActorCritic(hidden)
+    return BeliefActorCritic(hidden, features=GAUSSIAN_FEATURES
+                            if config.belief_representation == 'gaussian_uniform' else 14)
+
+
 def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None):
     expected_features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
     if model.features != expected_features or target.features != expected_features:
@@ -52,12 +67,19 @@ def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None
             background_update=config.belief_background_update,
             report_association=config.belief_report_association,
             background_type_prior=list(config.belief_background_type_prior))
+    if config.belief_exploration_only:
+        payload['training_settings'].update(shared_encoder=False,
+            policy='Target Allocation peer actor and cross-attention Q; separate encoders',
+            update='Q warm-up; PPO with COMA advantages and auxiliary Q loss',
+            reward='value of first detections only; no consumption',
+            actions='full search-support rectangular partition; hold until one sweep completes')
     torch.save(payload,Path(path))
 
 
 def load_belief_checkpoint(path, config=None):
     payload=torch.load(path,map_location='cpu',weights_only=False)
-    if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2'):
+    if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2',
+                                           'polygon_exploration_target_allocation'):
         raise ValueError('Belief mode requires a belief checkpoint; Target Allocation uses --mode known')
     config=config or Config(**payload['config'])
     if config.mode!='belief':
@@ -65,7 +87,9 @@ def load_belief_checkpoint(path, config=None):
     features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
     if features != payload.get('features', 14):
         raise ValueError('Checkpoint belief representation differs from config; train a new model for gaussian_uniform')
-    model=BeliefActorCritic(payload['hidden'], features=features)
+    model=make_model(config, payload['hidden'])
+    if model.architecture != payload['architecture']:
+        raise ValueError('Checkpoint policy and configured belief task differ')
     model.load_state_dict(payload['state_dict'])
     model.eval()
     return model,config,payload
@@ -94,7 +118,7 @@ def evaluate_belief(model, config, episodes=30, seed=10000, resolver='none', bas
                     replay_frames=None):
     rows=[]
     for episode in range(episodes):
-        world=BeliefWorld(config)
+        world=make_world(config)
         obs=world.reset(seed+episode)
         recording = replay_frames is not None and episode == episodes-1
         if recording:
@@ -183,10 +207,10 @@ def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
         raise ValueError(f'Existing experiment: {out}; choose a new output directory')
     out.mkdir(parents=True,exist_ok=True)
     config.save(out/'config.json')
-    model=BeliefActorCritic(features=GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14)
+    model=make_model(config)
     target=deepcopy(model).requires_grad_(False)
     optimizer=torch.optim.Adam(model.parameters(),lr=learning_rate,eps=1e-5)
-    worlds=[BeliefWorld(config) for _ in range(n_envs)]
+    worlds=[make_world(config) for _ in range(n_envs)]
     obs=[w.reset(int(rng.integers(2**31))) for w in worlds]
     completed=0
     next_eval=eval_interval if eval_interval else None

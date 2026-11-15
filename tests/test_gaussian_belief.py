@@ -32,6 +32,26 @@ class GaussianBeliefTests(unittest.TestCase):
                       sigma_hint=10., log_sigma_std=.5, member_radius=6.5)
         return GaussianTargetBelief(self.config(**kwargs), report)
 
+    def test_distinct_individual_reports_and_no_truth_leak(self):
+        world = BeliefWorld(self.config())
+        world.reset(10000)
+        packet = world.belief.initial_intel
+        self.assertEqual(len(packet['objects']), 3)
+        means = np.array([r['position'] for r in packet['objects']])
+        distance = np.linalg.norm(means[:, None]-means[None, :], axis=-1)
+        self.assertGreater(distance[np.triu_indices(3, 1)].min(), 0)
+        self.assertLessEqual(distance.max(), 2*world.c.target_formation_radius+1e-8)
+        initialized = GaussianTargetBelief(self.config(), packet)
+        for report, component in zip(packet['objects'], initialized.components):
+            np.testing.assert_array_equal(report['position'], component['mean'])
+            self.assertEqual(report['type'], component['type'])
+            self.assertEqual(set(report), {'position', 'type', 'sigma_hint', 'log_sigma_std'})
+        before = deepcopy(packet)
+        world._world.targets[:] = 80
+        self.assertEqual(before, world.belief.initial_intel)
+        np.testing.assert_allclose(world.belief.remaining_types, packet['type_counts'])
+        self.assertAlmostEqual(world.belief.background_mass, 1.)
+
     def test_uniform_attributes_and_geometry(self):
         b = GaussianTargetBelief(self.config(belief_background_type_prior=(.6, .3, .1)))
         r = b.records[:b.cells]

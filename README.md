@@ -45,9 +45,10 @@ python -m pointmass_rl evaluate --mode known \
 
 평가 결과는 `episodes.csv`, `summary.json`, `comparison.png`, `replay.html`에 저장합니다. 학습 중 평가는 `training_evaluations.csv`에 저장합니다.
 
+
 ## Belief Target Allocation
 
-초기 보고 표적마다 위치 Gaussian과 알려진 타입을 둡니다. 전역 탐색 belief는 이 Gaussian들의 합과 총질량 1의 기본 uniform 배경으로 구성됩니다. 배경 타입 prior는 각 타입 1/3이며 실제 미발견 표적 수를 참조하지 않습니다.
+초기 보고는 표적별로 서로 다른 위치와 알려진 타입을 제공합니다. 각 위치를 중심으로 개별 Gaussian을 두며, 실제 표적은 자기 보고 위치 주변에 Gaussian 변위로 배치됩니다. 전역 탐색 belief는 이 Gaussian들의 합과 총질량 1의 기본 uniform 배경으로 구성됩니다. 배경 타입 prior는 각 타입 1/3이며 실제 미발견 표적 수를 참조하지 않습니다.
 
 매 스텝 센서 관측을 반영합니다. 미검출 위치에는 `1 − 탐지 확률`을 곱하고, 보고 Gaussian의 남은 질량·평균·공분산을 갱신합니다. 배경에서 줄어든 질량은 가까운 덜 관측된 곳으로 재분배하며 총질량과 타입 prior를 유지합니다. 배경은 연속 Gaussian 기저로 표현합니다.
 
@@ -63,6 +64,17 @@ python -m pointmass_rl evaluate --mode belief \
 ```
 
 Belief 학습은 seed 7, 환경 8개, rollout 64, actor·critic epochs 4, minibatch 32입니다. Replay에서 belief 변화와 발견된 표적을 볼 수 있으며 실제 표적 위치는 토글로 확인합니다. `--no-lawnmower`는 평가의 lawnmower 탐색을 끄고 Dubins 이동을 유지합니다.
+
+### 탐색 전용 RL
+
+`configs/belief_exploration.json`은 안쪽 8×8 km 전체를 겹침 없는 1×1 km 사각 polygon 64개로 나눕니다. 후보별 belief는 매 스텝 갱신하며, 선택한 polygon은 100 m 간격 lawnmower와 Dubins 경로로 한 번 탐색한 뒤 다시 선택합니다. 최초 발견 시 표적 가치(Type 1: 5, Type 2: 2, Type 3: 1)를 한 번 지급하며 표적 처리와 드론 consume은 없습니다. 모든 표적을 발견하거나 1,800초가 지나면 에피소드가 끝납니다.
+
+정책은 time-limit 평가에 사용한 Target Allocation의 구조를 따릅니다. Actor는 후보별 query로 동료의 상태·직전 의도를 읽고, critic은 드론·polygon 사이의 양방향 cross-attention 두 회와 시간 조건의 전체 표현 집계로 공동 행동 Q를 예측합니다. 입력을 polygon belief와 탐색 진행 상태로 바꾸며, actor와 critic의 인코더는 별도입니다. 새 정책은 처음부터 PPO/COMA로 학습합니다.
+
+```bash
+bash scripts/train_belief_exploration.sh
+python -m pointmass_rl evaluate --mode belief --model runs/belief_exploration/best.pt --episodes 10 --seed 10000 --out runs/eval_belief_exploration
+```
 
 ### Polygon 탐색 데모
 

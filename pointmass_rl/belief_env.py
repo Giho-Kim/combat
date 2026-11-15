@@ -29,6 +29,9 @@ class _BeliefLayoutWorld(World):
         if not self.c.belief_initial_intel:
             return self.observation.copy()
         c = self.c
+        if c.belief_representation == 'gaussian_uniform':
+            self._individual_reports()
+            return self.observation.copy()
         # The historical F1 centre becomes the reported centre. F2 keeps its
         # sampled position. Only F1 is displaced after the report is generated.
         reported = self.formation_centers[0].copy()
@@ -65,6 +68,55 @@ class _BeliefLayoutWorld(World):
                                   log_sigma_std=c.belief_intel_log_sigma_std,
                                   member_radius=c.target_formation_radius)
         return self.observation.copy()
+
+    def _individual_reports(self):
+        """Generate independent public reports before sampling hidden positions."""
+        c = self.c
+        ids = np.flatnonzero(self.target_exists & (self.target_formation == 0))
+        unreported = self.targets[self.target_exists & (self.target_formation != 0)]
+        # Report sites are distinct members of one formation, rather than
+        # independent sites across the map. Their individual errors remain
+        # independent Gaussians; the formation centre is not a belief mode.
+        spacing = max(c.target_member_min_spacing, .6*c.target_formation_radius)
+        for attempt in range(1000):
+            anchor = (self.formation_centers[0].copy() if attempt == 0
+                      else self._sample_point(c.min_spawn_distance))
+            centers = []
+            try:
+                for _ in ids:
+                    center = self._sample_cluster_member(anchor, c.target_formation_radius,
+                                                         centers, spacing)
+                    if any(np.linalg.norm(center-other) < c.belief_report_min_separation
+                           for other in unreported):
+                        raise RuntimeError('Reported formation too close to unreported formation')
+                    centers.append(center)
+            except RuntimeError:
+                continue
+            break
+        else:
+            raise RuntimeError('Could not place distinct reports within one formation')
+        occupied = list(self.targets[self.target_exists & (self.target_formation != 0)])
+        reports = []
+        for target, center in zip(ids, centers):
+            sigma = float(self.rng.lognormal(np.log(c.belief_intel_sigma),
+                                             c.belief_intel_log_sigma_std))
+            for _ in range(4000):
+                point = center + self.rng.normal(0., sigma, 2)
+                if (self._valid_spawn(point, c.min_spawn_distance)
+                        and all(np.linalg.norm(point-other) >= c.target_member_min_spacing
+                                for other in occupied)):
+                    break
+            else:
+                raise RuntimeError('Could not place a target around its individual report')
+            self.targets[target] = self.spawn_position[target] = point
+            occupied.append(point)
+            reports.append(dict(position=center.tolist(), type=int(self.target_type[target]),
+                                sigma_hint=c.belief_intel_sigma,
+                                log_sigma_std=c.belief_intel_log_sigma_std))
+        self.formation_centers[0] = self.targets[ids].mean(axis=0)
+        self.initial_intel = dict(objects=reports,
+            position=np.mean(centers, axis=0).tolist(),
+            type_counts=np.bincount(self.target_type[ids], minlength=4)[1:4].tolist())
 
     def _sample_point(self, min_base_distance=0.0):
         c = self.c
@@ -207,7 +259,7 @@ class BeliefWorld:
             raise ValueError('Initial belief mode models stationary game objects')
         self.n = self.c.n_agents
         # Composition keeps the historical fully observed World untouched.
-        self._world = _BeliefLayoutWorld(replace(self.c, mode='known'))
+        self._world = _BeliefLayoutWorld(replace(self.c, mode='known', belief_exploration_only=False))
         self.action_count = self.c.belief_grid**2 + self.c.n_targets
 
     @property

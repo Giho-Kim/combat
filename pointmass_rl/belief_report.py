@@ -66,7 +66,7 @@ input[type=range]{width:min(320px,55vw)}label{white-space:nowrap}canvas{width:mi
 </style>
 <h1>Belief mode · 평가 리플레이</h1>
 <p id="motion"></p>
-<p>파란 칸은 미발견 표적의 예상 밀도입니다. 보라색 십자는 보고 위치, 타원은 관측으로 추정한 편제 중심의 위치 불확실성입니다. 빈 곳을 확인하거나 개체를 발견하면 분포가 갱신됩니다. 노란 원은 발견 개체이며 실제 위치는 확인용 토글로 표시합니다.</p>
+<p>파란 칸은 미발견 표적의 예상 밀도입니다. 보라색 십자는 표적별 초기 보고 위치입니다. 빈 곳을 확인하거나 개체를 발견하면 분포가 갱신됩니다. 노란 원은 발견 개체이며 실제 위치는 확인용 토글로 표시합니다.</p>
 <div class="controls"><select id="policy"></select><button id="play">재생</button><input id="time" type="range" min="0" value="0"><span id="step"></span><label><input id="truth" type="checkbox"> 실제 위치 보기</label></div>
 <div class="controls"><label><input id="belief" type="checkbox" checked> 미발견 belief</label><label><input id="sensor" type="checkbox" checked> 센서 범위</label><span id="belief-status"></span></div>
 <canvas id="map" width="800" height="800"></canvas><div id="stats"></div>
@@ -111,7 +111,12 @@ function draw(){const frames=data.runs[sel.value],index=Number(slider.value),f=f
       const [x,y]=xy(f.drones[i]),angle=-f.headings[i];
       ctx.fillStyle='rgba(100,255,195,.12)';ctx.strokeStyle='rgba(100,255,195,.6)';ctx.lineWidth=1;
       ctx.beginPath();ctx.moveTo(x,y);ctx.arc(x,y,radius,angle-half,angle+half);ctx.closePath();ctx.fill();ctx.stroke()}}
-  if(f.initial_intel){const report=f.initial_intel,[x,y]=xy(report.position);
+  if(f.initial_intel?.objects){
+    ctx.strokeStyle='#c89bff';ctx.fillStyle='#c89bff';ctx.lineWidth=1.5;
+    for(const report of f.initial_intel.objects){const [x,y]=xy(report.position);
+      ctx.beginPath();ctx.moveTo(x-6,y);ctx.lineTo(x+6,y);ctx.moveTo(x,y-6);ctx.lineTo(x,y+6);ctx.stroke();
+      ctx.fillText(`보고 Type ${report.type}`,x+9,y-9)}
+  }else if(f.initial_intel){const report=f.initial_intel,[x,y]=xy(report.position);
     ctx.strokeStyle='#c89bff';ctx.fillStyle='#c89bff';ctx.lineWidth=1.5;
     if(f.report_center_covariance){const cov=f.report_center_covariance,a=cov[0][0],b=cov[0][1],d=cov[1][1],
       root=Math.hypot(a-d,2*b),major=Math.sqrt(Math.max(0,(a+d+root)/2)),minor=Math.sqrt(Math.max(0,(a+d-root)/2)),
