@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,7 +18,22 @@ class PolygonExplorationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)
-        cls.config = Config.load(Path(__file__).resolve().parents[1]/'configs/belief_exploration.json')
+        cls.variable_config = Config.load(Path(__file__).resolve().parents[1]/'configs/belief_exploration.json')
+        cls.config = replace(cls.variable_config, n_agents=5, n_targets=5, randomize_counts=False)
+
+    def test_variable_reset_samples_at_least_one_drone_per_target(self):
+        world = PolygonExplorationWorld(self.variable_config)
+        pairs = set()
+        for seed in range(20):
+            obs = world.reset(seed)
+            counts = world.metrics()
+            drones, targets = counts['agent_count'], counts['target_count']
+            self.assertTrue(5 <= targets <= drones <= 10)
+            self.assertEqual(drones, obs['active'].sum())
+            self.assertTrue((obs['mask'][~obs['active']].sum(-1) == 1).all())
+            pairs.add((drones, targets))
+        self.assertGreater(len({d for d, _ in pairs}), 1)
+        self.assertGreater(len({t for _, t in pairs}), 1)
 
     def world(self):
         world = PolygonExplorationWorld(self.config)

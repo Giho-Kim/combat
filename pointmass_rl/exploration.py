@@ -10,18 +10,25 @@ import torch
 from torch import nn
 
 from .attention_actor import AttentionActorBody
-from .belief_env import BeliefWorld
+from .belief_env import BeliefWorld, _BeliefLayoutWorld
 from .belief_policy import BeliefActorCritic
 from .env import split_strike_action, target_remaining_value
 from .gaussian_belief import GAUSSIAN_FEATURES
 from .graph_critic import GraphQBody
-from .navigation import DubinsPath
+from .navigation import DubinsPath, rectangle_entry_distance
 
 
 DRONE_FEATURES = 14
 
 
+class _ExplorationLayoutWorld(_BeliefLayoutWorld):
+    def _sample_agent_count(self, actual_targets):
+        return self._count(max(self.c.min_agents, actual_targets), self.c.n_agents)
+
+
 class PolygonExplorationWorld(BeliefWorld):
+    layout_world = _ExplorationLayoutWorld
+
     def __init__(self, config):
         super().__init__(config)
         self.action_count = config.belief_grid**2
@@ -41,6 +48,7 @@ class PolygonExplorationWorld(BeliefWorld):
         w = self._world
         mask = np.ones((self.n, self.action_count), dtype=bool)
         decision = w.agent_active.copy()
+        mask[~decision, 1:] = False
         for i, nav in enumerate(self.navigation):
             if nav is not None:
                 mask[i] = False
@@ -105,7 +113,40 @@ class PolygonExplorationWorld(BeliefWorld):
             self.navigation[i] = None
             self.chosen[i] = -1
 
-    def step(self, action, probabilities=None):
+    def polygon_entry_steps(self, agent, component):
+        """Physics steps until first region entry along the actual controller route."""
+        w, c = self._world, self.c
+        lo, hi = self.belief.bounds[component]
+        position, heading = w.pos[agent].copy(), w.heading[agent]
+        if np.all(position >= lo) and np.all(position <= hi):
+            return 0
+        travelled = 0.
+        for destination, end_heading in self._waypoints(component, position):
+            path = DubinsPath(position, heading, destination, end_heading, c.belief_turn_radius)
+            entry = rectangle_entry_distance(path, position, heading, lo, hi)
+            if math.isfinite(entry):
+                return max(0, math.ceil((travelled+entry)/(c.strike_speed*c.dt)-1e-9))
+            travelled += path.length
+            position, heading = destination, end_heading
+        return math.inf
+
+    def entry_deadline_mask(self):
+        """Evaluation filter only: retain options reachable before the horizon.
+
+        Locked sweeps continue. If no candidate can be entered, preserve the
+        original choices because the environment has no idle/stop action.
+        """
+        mask, decision = self.action_mask()
+        remaining = self.c.horizon-self._world.t
+        for agent in np.flatnonzero(decision):
+            feasible = np.array([self.polygon_entry_steps(agent, component) <= remaining
+                                 for component in range(self.action_count)], dtype=bool)
+            allowed = mask[agent] & feasible
+            if allowed.any():
+                mask[agent] = allowed
+        return mask
+
+    def step(self, action, probabilities=None, *, decisions_only=False):
         w, c = self._world, self.c
         if w.done:
             raise RuntimeError('Episode ended; call reset()')
@@ -132,7 +173,13 @@ class PolygonExplorationWorld(BeliefWorld):
         w.last_damage_by_agent.fill(0)
         w.last_agent_terminated.fill(False)
         w.t += 1
-        self._sense()  # Full sensor footprint, including entry and turn arcs.
+        # Always update the filter. Its observation summaries are needed only
+        # at decisions in evaluations that do not record a replay.
+        observe = not decisions_only or self.action_mask()[1].any()
+        if observe:
+            self._sense()
+        else:
+            self._sense(refresh=False)
         newly_found = w.discovered & ~before & w.target_exists
         reward = sum(target_remaining_value(w.target_type[j], w.target_life[j])
                      for j in np.flatnonzero(newly_found))
@@ -140,7 +187,8 @@ class PolygonExplorationWorld(BeliefWorld):
         w.discounted_rewards_total += c.discount_gamma**(w.t-1)*reward
         complete = bool(w.discovered[w.target_exists].all())
         w.done = complete or w.t >= c.horizon
-        return self.observation(), float(reward), complete, w.t >= c.horizon, self.metrics()
+        observation = self.observation() if observe else None
+        return observation, float(reward), complete, w.t >= c.horizon, self.metrics()
 
     def metrics(self):
         result = super().metrics()
@@ -151,7 +199,8 @@ class PolygonExplorationWorld(BeliefWorld):
                     for j in np.flatnonzero(w.target_exists))
         result.update(score=float(found), success_threshold=float(total),
                       mission_success=bool(w.discovered[w.target_exists].all()),
-                      discovered_value=float(found), consumed_objects=0)
+                      discovered_value=float(found), consumed_objects=0,
+                      agent_count=w.initial_agent_count, target_count=int(w.target_exists.sum()))
         return result
 
 
@@ -166,9 +215,11 @@ class PolygonQBody(GraphQBody):
         drones, records = obs['drones'], obs['beliefs']
         alive, valid = obs['active'], obs['valid']
         k = records.shape[1]
-        if action.shape != drones.shape[:2] or torch.any((action < 0) | (action >= k)):
+        if action is not None and (action.shape != drones.shape[:2] or torch.any((action < 0) | (action >= k))):
             raise ValueError('Invalid polygon joint action')
-        chosen = action[:, None, :] == torch.arange(k, device=action.device)[None, :, None]
+        chosen = (torch.zeros((drones.shape[0], k, drones.shape[1]), device=drones.device, dtype=torch.bool)
+                  if action is None else
+                  action[:, None, :] == torch.arange(k, device=action.device)[None, :, None])
         relative = records[:, :, None, 12:14]-drones[:, None, :, :2]
         edges = torch.cat((chosen[..., None].float(), obs['previous'].transpose(1, 2)[..., None],
                            obs['previous_choice'].transpose(1, 2)[..., None], relative), -1)
@@ -227,3 +278,12 @@ class ExplorationActorCritic(BeliefActorCritic):
     def joint_q(self, obs, action, detach_encoder=False):
         # Actor and critic encoders are separate, as in the reference policy.
         return self.q_head(self.q_body(obs, action)).squeeze(-1)
+
+
+class ExplorationPPOActorCritic(ExplorationActorCritic):
+    """Same actor and graph topology, with an action-independent state value."""
+    architecture = 'polygon_exploration_decision_ppo'
+
+    def state_value(self, obs):
+        # Previous intentions are observed state; the newly sampled action is not.
+        return self.q_head(self.q_body(obs, None)).squeeze(-1)

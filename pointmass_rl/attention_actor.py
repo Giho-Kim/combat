@@ -31,7 +31,7 @@ class PeerCrossAttention(nn.Module):
 
 
 class AttentionActorBody(nn.Module):
-    def __init__(self, hidden=64, heads=4, layers=2, time_embedding=False,
+    def __init__(self, hidden=64, heads=4, layers=2, time_embedding=True,
                  query_width=13, peer_width=7, time_index=6):
         super().__init__()
         # Query: target6, time1, own previous probability/choice2,

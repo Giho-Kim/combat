@@ -305,10 +305,10 @@ class TargetAllocationActorCritic(RelationalCriticBase):
     algorithm = 'target_coma'
     display_name = 'Target Allocation'
 
-    def __init__(self, n_targets, n_agents, hidden=64):
+    def __init__(self, n_targets, n_agents, hidden=64, actor_time_embedding=True):
         super().__init__(n_targets, n_agents, hidden)
         from .attention_actor import AttentionActorBody
-        self.actor_body = AttentionActorBody(hidden)
+        self.actor_body = AttentionActorBody(hidden, time_embedding=actor_time_embedding)
 
     def actor_logits(self, obs, *, n_agents=None, n_targets=None):
         n = self.n_agents if n_agents is None else n_agents

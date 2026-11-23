@@ -20,6 +20,6 @@ exec "${PYTHON_BIN:-python}" -m pointmass_rl train \
   --target-coma-critic graph --target-coma-actor attention \
   --steps "$steps" --out "$out" --seed "${SEED:-7}" \
   --gamma 1.0 --gae-lambda 0.97 --n-envs 32 --rollout-steps 200 \
-  --epochs 10 --critic-epochs 40 --minibatch-size 256 --critic-minibatch-size 256 \
+  --epochs 10 --critic-epochs 20 --minibatch-size 256 --critic-minibatch-size 256 \
   --coma-advantage q --actor-samples all --decision-interval 1 \
   --eval-interval 100000 --eval-episodes 30 --eval-seed 10000 "${extra[@]}"

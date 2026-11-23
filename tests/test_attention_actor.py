@@ -30,6 +30,40 @@ class AttentionActorTests(unittest.TestCase):
         torch.set_num_threads(1)
         torch.manual_seed(31)
 
+    def test_time_changes_only_query_and_receives_gradient(self):
+        model = TargetAllocationActorCritic(4, 3)
+        obs = pack(example(3, 4))
+        captured = []
+        handle = model.actor_body.layers[0].register_forward_pre_hook(
+            lambda module, args: captured.append(tuple(x.detach().clone() for x in args[:2])))
+        logits = model.actor_logits(obs)
+        later = obs.clone()
+        later[:, 0] += .5
+        later_logits = model.actor_logits(later)
+        handle.remove()
+        delta = .5 * model.actor_body.time_encoder.weight[:, 0]
+        before, after = captured[0][0], captured[1][0]
+        torch.testing.assert_close(after - before, delta.expand_as(before), atol=1e-6, rtol=1e-5)
+        torch.testing.assert_close(captured[0][1], captured[1][1])
+        self.assertFalse(torch.allclose(logits, later_logits))
+        logits.square().sum().backward()
+        grad = model.actor_body.time_encoder.weight.grad
+        self.assertTrue(torch.isfinite(grad).all())
+        self.assertGreater(grad.abs().sum().item(), 0)
+
+    def test_legacy_checkpoint(self):
+        model = TargetAllocationActorCritic(4, 3, actor_time_embedding=False)
+        obs = pack(example(3, 4))
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'legacy.pt'
+            save_checkpoint(path, model, {})
+            restored = model_from_checkpoint(path, Config(n_agents=3, min_agents=3,
+                                                         n_targets=4, min_targets=4))
+            torch.testing.assert_close(restored.actor_logits(obs), model.actor_logits(obs))
+            from pointmass_rl.strike_ppo import load_checkpoint
+            with self.assertRaisesRegex(ValueError, 'Actor time architecture differs'):
+                load_checkpoint(path, TargetAllocationActorCritic(4, 3))
+
     def test_whole_checkpoint_resizes(self):
         model = TargetAllocationActorCritic(5, 5)
         with TemporaryDirectory() as directory:

@@ -2,12 +2,10 @@
 import argparse
 import csv
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,12 +13,53 @@ from scripts.demo_polygon_mission import raster
 from scripts.demo_belief_polygons import generate, contains, vertices, lanes
 import scripts.demo_belief_polygons as planner
 from pointmass_rl.env import Config, target_remaining_value
-from pointmass_rl.belief_env import BeliefWorld
+from pointmass_rl.belief_env import BeliefWorld, _BeliefLayoutWorld
 from pointmass_rl.navigation import DubinsPath, point_path
 
 
-def simulate(config, seed, policy):
+class OppositeFormationDemoWorld(_BeliefLayoutWorld):
+    """Demo-only layout: retain F1 reports and cluster F2 across the map."""
+    def _reset_once(self, seed, success_threshold=None, evaluation_task=None):
+        super()._reset_once(seed, success_threshold, evaluation_task)
+        c=self.c;ids=np.flatnonzero(self.target_exists & (self.target_formation==1))
+        f1=self.targets[self.target_exists & (self.target_formation==0)].mean(axis=0)
+        margin=c.belief_search_margin+c.target_formation_radius
+        center=np.clip(c.size-f1,margin,c.size-margin)
+        occupied=list(self.targets[self.target_exists & (self.target_formation!=1)])
+        points=[]
+        for _ in ids:
+            point=self._sample_cluster_member(center,c.target_formation_radius,occupied,c.target_member_min_spacing)
+            points.append(point);occupied.append(point)
+        self.targets[ids]=points;self.spawn_position[ids]=points
+        self.formation_centers[1]=np.mean(points,axis=0)
+        self.observation=self._obs()
+        return self.observation.copy()
+
+
+class ArcFormationDemoWorld(_BeliefLayoutWorld):
+    """Sample F2's centre uniformly on the feasible half-map-radius arc."""
+    def _reset_once(self,seed,success_threshold=None,evaluation_task=None):
+        super()._reset_once(seed,success_threshold,evaluation_task)
+        c=self.c;ids=np.flatnonzero(self.target_exists & (self.target_formation==1))
+        if len(ids)!=2:raise ValueError('Arc demo expects two F2 members')
+        f1=self.targets[self.target_exists & (self.target_formation==0)].mean(axis=0)
+        radius=.5*c.size;cluster_radius=.5*c.target_formation_radius
+        for _ in range(20000):
+            angle=self.rng.uniform(0,2*np.pi);center=f1+radius*np.array([np.cos(angle),np.sin(angle)])
+            if np.any(center<c.belief_search_margin+cluster_radius) or np.any(center>c.size-c.belief_search_margin-cluster_radius):continue
+            orientation=self.rng.uniform(0,2*np.pi);length=self.rng.uniform(c.target_member_min_spacing/2,cluster_radius)
+            offset=length*np.array([np.cos(orientation),np.sin(orientation)]);points=np.array([center-offset,center+offset])
+            if not all(self._valid_spawn(point,c.min_spawn_distance) for point in points):continue
+            break
+        else:raise RuntimeError('No feasible F2 arc placement')
+        self.targets[ids]=points;self.spawn_position[ids]=points;self.formation_centers[1]=center
+        self.observation=self._obs();return self.observation.copy()
+
+
+def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_two=False):
     world = BeliefWorld(config)
+    if opposite_formation_two:world._world=OppositeFormationDemoWorld(world._world.c)
+    if arc_formation_two:world._world=ArcFormationDemoWorld(world._world.c)
     world.reset(seed)
     w, b = world._world, world.belief
     nav = [None] * w.n
@@ -173,114 +212,91 @@ def simulate(config, seed, policy):
     summary=dict(seed=seed, heuristic=policy, completed=int(w.destroyed[w.target_exists].sum()),
                  total=int(w.target_exists.sum()), discovered=len(b.tracks), steps=int(w.t),
                  mean_polygon_generation_ms=float(np.mean(generation_times)))
-    return dict(summary=summary,frames=frames,events=events)
+    summary.update(completed_f1=int(w.destroyed[w.target_exists & (w.target_formation==0)].sum()),completed_f2=int(w.destroyed[w.target_exists & (w.target_formation==1)].sum()))
+    return dict(summary=summary,initial_intel=b.initial_intel,frames=frames,events=events,layout=dict(targets=w.spawn_position.tolist(),formations=w.target_formation.tolist(),centers=w.formation_centers.tolist()))
 
 
-def video(a, b, path, config):
-    font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',17)
-    colors=['#0079bb','#8955c4','#278433','#db7725','#bf467b']
-    cmd=['ffmpeg','-loglevel','error','-y','-f','rawvideo','-pix_fmt','rgb24','-s','1200x690',
-         '-r','12','-i','-','-an','-c:v','libx264','-preset','fast','-crf','20','-pix_fmt','yuv420p',str(path)]
-    process=subprocess.Popen(cmd,stdin=subprocess.PIPE)
-    try:
-        for idx in range(max(len(a['frames']),len(b['frames']))):
-            im=Image.new('RGB',(1200,690),'white'); draw=ImageDraw.Draw(im)
-            for side,data in enumerate((a,b)):
-                frame=data['frames'][min(idx,len(data['frames'])-1)]; ox=side*600
-                name='belief polygons' if side==0 else '2 scouts + type priority'
-                draw.text((ox+20,12),f'H{side+1}: {name} | seed {data["summary"]["seed"]} | {frame["step"]} s',font=font,fill='#223348')
-                draw.text((ox+20,40),f'Removed {frame["completed"]}/{data["summary"]["total"]}   Discovered {frame["discovered"]}',font=font,fill='#223348')
-                heat=np.asarray(frame['heat'],dtype=float)/255
-                stops=np.array([[242,249,252],[100,204,192],[255,226,86],[240,84,55]])
-                rgb=np.stack([np.interp(heat,np.linspace(0,1,4),stops[:,c]) for c in range(3)],-1).astype('uint8')
-                img=Image.fromarray(rgb[::-1]).resize((432,432),Image.Resampling.BILINEAR)
-                im.paste(img,(ox+84,124)); draw.rectangle((ox+30,70,ox+570,610),outline='#8395a6',width=2)
-                def xy(p): return (ox+30+p[0]*54,610-p[1]*54)
-                for p in frame.get('polygons',[]):
-                    v=[xy(z) for z in p['vertices']];v.append(v[0])
-                    assigned=p['assigned']
-                    draw.line(v,fill=colors[assigned%5] if assigned>=0 else '#a5b0ba',
-                              width=3 if assigned>=0 else 1)
-                placed=[]
-                for t in frame['truth']:
-                    x,y=xy(t['position']); r=7
-                    draw.ellipse((x-r,y-r,x+r,y+r),outline='#db5290',width=2)
-                    if t['life']<=0: draw.line((x-r,y-r,x+r,y+r),fill='#db5290',width=2)
-                    label=f'Type {t["type"]} L{t["life"]}'
-                    lx=min(x+9,ox+565-draw.textlength(label,font=font)); ly=y-10
-                    width=draw.textlength(label,font=font)
-                    while any(lx<px+pw and lx+width>px and ly<py+21 and ly+21>py for px,py,pw in placed):
-                        ly+=22
-                    placed.append((lx,ly,width))
-                    if abs(ly-y)>15: draw.line((x,y,lx,ly+8),fill='#823151',width=1)
-                    draw.text((lx,ly),label,font=font,fill='#823151')
-                for t in frame['tracks']:
-                    if t['life']>0:
-                        x,y=xy(t['position']); draw.ellipse((x-4,y-4,x+4,y+4),fill='#ffd526',outline='black')
-                for i,p in enumerate(frame['pos']):
-                    trail=[xy(f['pos'][i]) for f in data['frames'][max(0,idx-30):min(idx+1,len(data['frames']))]]
-                    if len(trail)>1: draw.line(trail,fill=colors[i%5],width=2)
-                    x,y=xy(p)
-                    if frame['active'][i]:
-                        angle=-frame['heading'][i]*180/np.pi; half=config.sensor_fov_deg/2; r=config.sensor_range/10*54
-                        draw.arc((x-r,y-r,x+r,y+r),angle-half,angle+half,fill='#788999',width=1)
-                        draw.ellipse((x-4,y-4,x+4,y+4),fill=colors[i%5])
-                    else: draw.line((x-4,y-4,x+4,y+4),fill='#8e98a3',width=2)
-                draw.text((ox+20,628),'Belief: pale → red | pink: truth | yellow: detected',font=font,fill='#223348')
-                draw.text((ox+20,655),'Polygons: grey candidates / drone color assigned',font=font,fill='#223348')
-            process.stdin.write(im.tobytes())
-    finally:
-        process.stdin.close()
-    if process.wait(): raise RuntimeError('ffmpeg failed')
+from scripts.belief_video_style import video
+
+
+def add_value_metrics(data):
+    first=data['frames'][0]['truth'];last=data['frames'][-1]['truth']
+    earned=np.array([target_remaining_value(a['type'],a['life'])-target_remaining_value(b['type'],b['life']) for a,b in zip(first,last)])
+    formation=np.array(data['layout']['formations'])[:len(earned)]
+    data['summary'].update(value=float(earned.sum()),value_f1=float(earned[formation==0].sum()),value_f2=float(earned[formation==1].sum()))
+    return data
 
 
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--out',default='runs/belief_polygon_heuristic_comparison')
     parser.add_argument('--seeds',type=int,nargs='+',default=list(range(10000,10010)))
+    parser.add_argument('--opposite-formation-two',action='store_true',help='Demo only: cluster F2 opposite F1 across the map')
+    parser.add_argument('--arc-formation-two',action='store_true',help='Demo only: random F2 cluster on a half-map-radius arc around F1')
+    parser.add_argument('--no-video',action='store_true',help='Save comparisons without encoding videos')
     parser.add_argument('--render-only',action='store_true',help='Use saved trajectories without simulation.')
     parser.add_argument('--simulate-only',action='store_true',help='Save trajectories without video encoding.')
-    args=parser.parse_args(); out=ROOT/args.out; out.mkdir(parents=True,exist_ok=True)
+    args=parser.parse_args()
+    if args.arc_formation_two and args.opposite_formation_two:parser.error('Choose one F2 layout')
+    out=ROOT/args.out; out.mkdir(parents=True,exist_ok=True)
     config=Config.load(ROOT/'configs/belief.json')
     rows=[]
     for seed in args.seeds:
         pair=[]
         for policy in (1,2):
             cached=out/f'seed_{seed}_h{policy}.json'
-            data=json.loads(cached.read_text()) if args.render_only else simulate(config,seed,policy)
+            data=json.loads(cached.read_text()) if args.render_only else simulate(config,seed,policy,args.opposite_formation_two,args.arc_formation_two)
+            data=add_value_metrics(data)
             pair.append(data); rows.append(data['summary'])
             (out/f'seed_{seed}_h{policy}.json').write_text(json.dumps(data))
             print(json.dumps(data['summary']),flush=True)
-        if not args.simulate_only: video(*pair,out/f'seed_{seed}.mp4',config)
+        if not args.simulate_only and not args.no_video: video(*pair,out/f'seed_{seed}.mp4',config)
+    if len(args.seeds)==1:
+        (out/'initial_report.json').write_text(json.dumps(pair[0]['initial_intel'],indent=2))
+        if not args.simulate_only and not args.no_video:
+            import shutil
+            shutil.copy2(out/f'seed_{args.seeds[0]}.png',out/'preview.png')
     if args.simulate_only: return
     with (out/'results.csv').open('w',newline='') as f:
-        writer=csv.DictWriter(f,fieldnames=rows[0]); writer.writeheader(); writer.writerows(rows)
+        writer=csv.DictWriter(f,fieldnames=rows[0],lineterminator='\n'); writer.writeheader(); writer.writerows(rows)
     summary={f'h{p}':dict(mean_completed=float(np.mean([r['completed'] for r in rows if r['heuristic']==p])),
                          total_completed=sum(r['completed'] for r in rows if r['heuristic']==p)) for p in (1,2)}
+    for policy in (1,2):
+        subset=[r for r in rows if r['heuristic']==policy]
+        summary[f'h{policy}'].update(mean_value=float(np.mean([r['value'] for r in subset])),mean_value_f2=float(np.mean([r['value_f2'] for r in subset])))
     (out/'summary.json').write_text(json.dumps(summary,indent=2))
     (out/'rules.json').write_text(json.dumps(dict(seeds=args.seeds,config=config.__dict__,
         h1='Existing belief-based trapezoid generator, disjoint polygon IDs, 100m lawnmower with Dubins connectors; immediate target processing.',
         h2='Two scouts cover disjoint map halves in 100m lanes until half horizon; other drones use greedy search and type-value priority. Scouts join type-value priority after half horizon.',
-        metric='Count of targets with zero remaining life; same scenario seeds; public belief only.'),indent=2))
+        formation_two_layout='uniform feasible arc, radius half map side, clustered pair' if args.arc_formation_two else 'opposite F1, clustered' if args.opposite_formation_two else 'configured',
+        metric='Earned type-weighted value: type 1 = 2.5 per life, type 2 = 2, type 3 = 1; includes partial progress on type 1.'),indent=2))
     print(summary,flush=True)
 
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     seeds=args.seeds; x=np.arange(len(seeds))
-    fig,ax=plt.subplots(figsize=(10,4.4))
+    fig,axes=plt.subplots(1,2 if args.arc_formation_two else 1,figsize=(13,4.4) if args.arc_formation_two else (10,4.4),squeeze=False)
+    ax=axes[0,0]
     for policy,color,offset in ((1,'#2563eb',-.19),(2,'#d97706',.19)):
-        values=[next(r['completed'] for r in rows if r['seed']==seed and r['heuristic']==policy) for seed in seeds]
-        ax.bar(x+offset,values,.36,color=color,label=f'H{policy}: mean {np.mean(values):.2f} / 5')
+        values=[next(r['value'] for r in rows if r['seed']==seed and r['heuristic']==policy) for seed in seeds]
+        ax.bar(x+offset,values,.36,color=color,label=f'H{policy}: mean {np.mean(values):.2f}')
     ax.set_xticks(x,[str(seed) for seed in seeds]); ax.set_xlabel('Scenario seed')
-    ax.set_ylabel('Targets removed'); ax.set_ylim(0,5.5); ax.set_yticks(range(6))
+    ax.set_ylabel('Earned target value'); ax.set_ylim(0,max(1,max(r['value'] for r in rows))*1.25)
     ax.legend(frameon=False); ax.spines[['top','right']].set_visible(False)
-    ax.grid(axis='y',alpha=.2); ax.set_axisbelow(True); fig.tight_layout()
+    ax.grid(axis='y',alpha=.2); ax.set_axisbelow(True)
+    if args.arc_formation_two:
+        ax=axes[0,1]
+        for policy,color,offset in ((1,'#2563eb',-.19),(2,'#d97706',.19)):
+            values=[next(r['value_f2'] for r in rows if r['seed']==seed and r['heuristic']==policy) for seed in seeds]
+            ax.bar(x+offset,values,.36,color=color,label=f'H{policy}: mean {np.mean(values):.2f}')
+        ax.set_xticks(x,[str(seed) for seed in seeds]);ax.set(xlabel='Scenario seed',ylabel='Formation 2 earned value',ylim=(0,max(1,max(r['value_f2'] for r in rows))*1.3));ax.legend(frameon=False);ax.grid(axis='y',alpha=.2);ax.set_axisbelow(True);ax.spines[['top','right']].set_visible(False)
+    fig.tight_layout()
     for ext in ('pdf','png'): fig.savefig(out/f'comparison.{ext}',dpi=180)
     plt.close(fig)
-    cards=''.join(f'<section><h2>Seed {seed}</h2><video controls preload="metadata" src="seed_{seed}.mp4"></video></section>' for seed in seeds)
+    cards='' if args.no_video else ''.join(f'<section><h2>Seed {seed}</h2><video controls preload="metadata" src="seed_{seed}.mp4"></video></section>' for seed in seeds)
     (out/'index.html').write_text('<!doctype html><meta charset="utf-8"><title>Belief heuristic comparison</title>'
-        '<style>body{font:16px system-ui;max-width:1200px;margin:24px auto;padding:0 20px}video,img{width:100%}section{margin:32px 0}</style>'
+        '<style>body{font:16px system-ui;max-width:1200px;margin:24px auto;padding:0 20px;background:#101826;color:#e7edf7}video,img{width:100%;border-radius:10px}section{margin:32px 0}</style>'
         '<h1>Polygon belief heuristic comparison</h1><p>H1: belief-based polygons, lawnmower search, immediate target processing.<br>'
         'H2: two systematic scouts for the first 900 seconds; remaining drones process by type value. '
         'Scouts join target processing after 900 seconds.</p><img src="comparison.png">'+cards)

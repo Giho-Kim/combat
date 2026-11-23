@@ -184,6 +184,8 @@ class Config:
             raise ValueError("n_targets capacity must be 1..20")
         if not 1 <= self.min_targets <= self.n_targets:
             raise ValueError("min_targets must fit target capacity")
+        if self.belief_exploration_only and self.randomize_counts and self.n_agents < self.n_targets:
+            raise ValueError("Variable exploration requires drone capacity at least as large as target capacity")
         if type(self.randomize_target_composition) is not bool:
             raise ValueError("randomize_target_composition must be a boolean")
         if self.randomize_target_composition and self.mode != 'known':
@@ -260,6 +262,9 @@ class World:
         low = min(low, high)
         return int(self.rng.integers(low, high + 1)) if self.c.randomize_counts else high
 
+    def _sample_agent_count(self, actual_targets):
+        return self._count(self.c.min_agents, self.c.n_agents)
+
     def _sample_point(self, min_base_distance=0.0):
         c = self.c
         margin = 1.0
@@ -328,7 +333,7 @@ class World:
         edge = 3.0
         self.base = self.rng.uniform(edge, c.size - edge, 2)
         actual_targets = self._count(c.min_targets, c.n_targets)
-        actual_agents = self._count(c.min_agents, c.n_agents)
+        actual_agents = self._sample_agent_count(actual_targets)
         self.agent_active = np.arange(self.n) < actual_agents
         self.initial_agent_count = actual_agents
         self.target_exists = np.zeros(c.n_targets, dtype=bool)

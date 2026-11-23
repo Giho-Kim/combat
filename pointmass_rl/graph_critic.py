@@ -59,7 +59,7 @@ class TypeSelfAttention(nn.Module):
 
 class GraphQBody(nn.Module):
     """All parameter shapes are independent of drone/target slot counts."""
-    def __init__(self, hidden=64, heads=4, rounds=2, self_attention=False):
+    def __init__(self, hidden=64, heads=4, rounds=2, self_attention=True):
         super().__init__()
         self.drone_encoder = nn.Sequential(nn.Linear(6, hidden), nn.SiLU(), nn.Linear(hidden, hidden))
         self.target_encoder = nn.Sequential(nn.Linear(6, hidden), nn.SiLU(), nn.Linear(hidden, hidden))

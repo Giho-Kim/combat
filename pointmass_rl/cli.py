@@ -79,38 +79,86 @@ def command_config(args):
 
 def train(args):
     c=command_config(args)
+    if args.exploration_ppo and (c.mode != 'belief' or not c.belief_exploration_only):
+        raise ValueError('--exploration-ppo requires belief exploration-only mode')
+    if getattr(args, 'eval_revisit_guard', False) and not args.exploration_ppo:
+        raise ValueError('--eval-revisit-guard requires --exploration-ppo')
+    if args.target_coma_critic=='temporal' and (c.mode!='known' or args.episodic_assignments):
+        raise ValueError('Temporal critic uses standard known-mode per-step PPO training')
+    if args.episodic_assignments and c.mode != 'known':
+        raise ValueError('--episodic-assignments requires Target Allocation')
+    if args.failure_replay_probability and (c.mode!='known' or args.episodic_assignments):
+        raise ValueError('Failure replay applies to original Target Allocation PPO training')
     if args.model_based_advantage and c.mode != 'known':
         raise ValueError('--model-based-advantage requires Target Allocation')
     if c.mode == 'belief':
-        if getattr(args, 'device', 'auto') == 'cuda':
-            raise ValueError('--device cuda currently supports known mode')
+        if getattr(args, 'device', 'auto') == 'cuda' and not args.exploration_ppo:
+            raise ValueError('--device cuda supports known mode and --exploration-ppo')
         from .belief_training import command_train
         command_train(args, c)
-        print(f'Saved {Path(args.out) / "belief_target_coma.pt"}', flush=True)
+        filename = 'exploration_ppo.pt' if args.exploration_ppo else 'belief_target_coma.pt'
+        print(f'Saved {Path(args.out) / filename}', flush=True)
         return
     try:
         import torch
-        from .strike_ppo import train_target_allocation,save_checkpoint
+        from .strike_ppo import train_target_allocation,save_checkpoint,checkpoint_payload
     except ImportError as e: raise SystemExit(str(e)) from e
-    out=Path(args.out);out.mkdir(parents=True,exist_ok=True);c.save(out/'config.json')
+    out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
+    start_transitions=0; previous_best_key=None; old_episodes=[]; old_evaluations=[]
+    if args.continue_run:
+        if args.initial_checkpoint: raise ValueError('--continue-run and --initial-checkpoint cannot be combined')
+        if json.loads(json.dumps(asdict(c))) != json.loads(json.dumps(asdict(Config.load(out/'config.json')))): raise ValueError('Continuation config differs from existing run')
+        args.initial_checkpoint=str(out/'latest.pt')
+        prior=checkpoint_payload(args.initial_checkpoint)['metadata']
+        start_transitions=int(prior.get('agent_transitions',prior.get('actual_agent_transitions',0)))
+        if start_transitions <= 0: raise ValueError('Checkpoint has no completed transition count')
+        best=checkpoint_payload(out/'best.pt')['metadata']
+        if best.get('best_metric') == 'mean_team_return_then_discounted_return':
+            previous_best_key=(best['best_value'],best['best_discounted_value'])
+        elif best.get('best_metric') == 'mean_success_then_mean_team_return':
+            previous_best_key=(best['best_success'],best['best_value'])
+        else: raise ValueError('Unsupported best checkpoint metric for continuation')
+        for name in ('training_episodes.csv','training_evaluations.csv'):
+            path=out/name
+            if not path.exists(): raise ValueError(f'Missing existing history: {path}')
+        with (out/'training_episodes.csv').open(newline='') as f: old_episodes=list(csv.DictReader(f))
+        with (out/'training_evaluations.csv').open(newline='') as f: old_evaluations=list(csv.DictReader(f))
+    else: c.save(out/'config.json')
     print(f'Training Target Allocation: {args.steps:,} agent transitions',flush=True)
-    model,episodes,evaluations,actual=train_target_allocation(
-        c,args.steps,args.seed,args.rollout_steps,epochs=args.epochs,progress=True,
-        learning_rate=args.learning_rate, minibatch_size=args.minibatch_size,
-        entropy_coef=args.entropy_coef, policy_clip=args.policy_clip,
-        policy_temperature=args.policy_temperature,
-        actor_samples=args.actor_samples,
-        guided_training=args.guided_training,
-        coma_advantage=args.coma_advantage, critic_epochs=args.critic_epochs,
-        target_coma_critic=args.target_coma_critic,
-        target_coma_actor=args.target_coma_actor,
-        critic_minibatch_size=args.critic_minibatch_size, best_metric=args.best_metric,
-        initial_checkpoint=args.initial_checkpoint,
-        lookahead_credit=args.lookahead_credit,
-        deadline_mask=args.deadline_mask,
-        eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
-        best_path=out/'best.pt',latest_path=out/'latest.pt',checkpoint_dir=out,
-        n_envs=args.n_envs,diagnostics_path=out/'training_updates.csv',algorithm=args.algorithm,device=args.device)
+    if args.episodic_assignments:
+        if args.guided_training or args.lookahead_credit or args.deadline_mask:
+            raise ValueError('Episodic PPO uses raw environment rewards without model guidance')
+        from .episodic_ppo import train as train_episodic
+        model,episodes,evaluations,actual=train_episodic(c,args.steps,args.seed,
+            episodes_per_update=args.assignment_episodes,n_envs=args.n_envs,
+            epochs=args.epochs,critic_epochs=args.critic_epochs,
+            minibatch_size=args.minibatch_size,critic_minibatch_size=args.critic_minibatch_size,
+            learning_rate=args.learning_rate,entropy_coef=args.entropy_coef,
+            policy_clip=args.policy_clip,coma_advantage=args.coma_advantage,
+            eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
+            out=out,initial_checkpoint=args.initial_checkpoint,start_transitions=start_transitions,
+            previous_best_key=previous_best_key,device=args.device)
+    else:
+        model,episodes,evaluations,actual=train_target_allocation(
+            c,args.steps,args.seed,args.rollout_steps,epochs=args.epochs,progress=True,
+            learning_rate=args.learning_rate, minibatch_size=args.minibatch_size,
+            entropy_coef=args.entropy_coef, policy_clip=args.policy_clip,
+            policy_temperature=args.policy_temperature,
+            actor_samples=args.actor_samples,
+            guided_training=args.guided_training,
+            coma_advantage=args.coma_advantage, critic_epochs=args.critic_epochs,
+            target_coma_critic=args.target_coma_critic,
+            target_coma_actor=args.target_coma_actor,
+            critic_minibatch_size=args.critic_minibatch_size, best_metric=args.best_metric,
+            initial_checkpoint=args.initial_checkpoint,
+            lookahead_credit=args.lookahead_credit,
+            deadline_mask=args.deadline_mask,
+            eval_deadline_mask=args.eval_deadline_mask,
+            eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
+            best_path=out/'best.pt',latest_path=out/'latest.pt',checkpoint_dir=out,
+            n_envs=args.n_envs,diagnostics_path=out/'training_updates.csv',algorithm=args.algorithm,device=args.device,
+            start_transitions=start_transitions,previous_best_key=previous_best_key,
+            failure_replay_probability=args.failure_replay_probability,failure_pool_size=args.failure_pool_size)
     metadata=dict(seed=args.seed,requested_agent_transitions=args.steps,actual_agent_transitions=actual,
                   eval_interval=args.eval_interval,eval_episodes=args.eval_episodes,eval_seed=args.eval_seed,
                   evaluation_tasks=list(EVALUATION_TASKS) if evaluation_task_for_episode(c,0) else None,
@@ -118,22 +166,25 @@ def train(args):
                   algorithm='Target Allocation',
                   training_settings=model.training_settings)
     model_path = out / f'strike_{args.algorithm}.pt'
-    save_checkpoint(model_path,model,metadata);write_csv(out/'training_episodes.csv',episodes)
+    save_checkpoint(model_path,model,metadata);write_csv(out/'training_episodes.csv',old_episodes+episodes)
     save_checkpoint(out/'latest.pt',model,metadata)
-    if not evaluations:
+    if not evaluations and not args.continue_run:
         save_checkpoint(out/'best.pt',model,dict(metadata, best_metric='final_model'))
-    write_csv(out/'training_evaluations.csv',evaluations)
+    write_csv(out/'training_evaluations.csv',old_evaluations+evaluations)
     (out/'training_metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
     print(f'Saved {model_path}',flush=True)
 
 def evaluate(args):
     c=command_config(args)
+    if getattr(args, 'belief_lookahead', False) and c.mode != 'belief':
+        raise ValueError('--belief-lookahead requires belief exploration mode')
     if c.mode == 'belief':
         if getattr(args, 'device', 'auto') == 'cuda':
             raise ValueError('--device cuda currently supports known mode')
         from .belief_training import command_evaluate
         return command_evaluate(args, c)
-    out=Path(args.out);out.mkdir(parents=True,exist_ok=True);c.save(out/'config.json')
+    out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
+    c.save(out/'config.json')
     balanced=(c.n_targets==5 and c.min_targets==5 and not c.randomize_counts
               and not c.randomize_target_composition)
     task_suite=evaluation_task_for_episode(c,0) is not None
@@ -207,6 +258,8 @@ def main():
     p=argparse.ArgumentParser(description='Target Allocation and Belief Target Allocation');s=p.add_subparsers(dest='command',required=True)
     q=s.add_parser('train');q.add_argument('--steps',type=int,default=1_000_000);q.add_argument('--rollout-steps',type=int,default=200);q.add_argument('--n-envs',type=int,default=32);q.add_argument('--seed',type=int,default=7);q.add_argument('--out',default='runs/train');q.add_argument('--config');q.add_argument('--eval-interval',type=int,default=10_000,help='agent transitions between held-out evaluations; 0 disables evaluation');q.add_argument('--eval-episodes',type=int,default=3);q.add_argument('--eval-seed',type=int,default=10_000);q.set_defaults(func=train)
     q=s.add_parser('evaluate');q.add_argument('--model');q.add_argument('--episodes',type=int,default=30);q.add_argument('--seed',type=int,default=10000);q.add_argument('--out',default='runs/eval');q.add_argument('--config');q.set_defaults(func=evaluate)
+    q.add_argument('--belief-lookahead', action='store_true',
+        help='Evaluate the training-free two-option planner in belief exploration mode')
     q.add_argument('--lawnmower', action=argparse.BooleanOptionalAction, default=None,
         help='Enable/disable region lawnmower sweeps in belief evaluation; Dubins movement stays enabled (default: config)')
     s.choices['train'].add_argument('--algorithm', choices=('target_allocation', 'target_coma'), default='target_allocation')
@@ -217,13 +270,26 @@ def main():
     s.choices['train'].add_argument('--gae-lambda', type=float, default=None)
     s.choices['train'].add_argument('--coma-advantage', choices=('q', 'sampled_return'), default='q',
         help='COMA actor signal: estimated Q or observed return minus counterfactual baseline')
-    s.choices['train'].add_argument('--target-coma-critic', choices=('graph',), default='graph',
-        help='Target Allocation relational graph critic')
+    s.choices['train'].add_argument('--exploration-ppo', action='store_true',
+        help='Exploration only: complete polygon-decision rollouts and PPO with Monte Carlo return minus V; --rollout-steps counts decision samples')
+    s.choices['train'].add_argument('--eval-workers', type=int, default=4,
+        help='Exploration PPO evaluation processes across resolver/episode pairs; 1 runs serially (default: 4)')
+    s.choices['train'].add_argument('--eval-screen-episodes', type=int, default=0,
+        help='Paired seeds for intermediate exploration PPO screening; 0 evaluates every checkpoint on the full suite')
+    s.choices['train'].add_argument('--eval-revisit-guard', action='store_true',
+        help='Evaluate exploration PPO only with the score resolver, entry time limit, and revisit guard')
+    s.choices['train'].add_argument('--target-coma-critic', choices=('graph','temporal'), default='graph',
+        help='Relational graph Q or deadline-aware completion-time critic')
     s.choices['train'].add_argument('--target-coma-actor', choices=('attention',), default='attention',
         help='Target Allocation peer-attention actor')
     s.choices['train'].add_argument('--critic-epochs', type=int, default=None,
-        help='COMA Q fitting epochs per rollout (default: 4 times --epochs); actor epochs unchanged')
+        help='COMA Q fitting epochs per rollout (default: 2 times --epochs); actor epochs unchanged')
     s.choices['train'].add_argument('--critic-minibatch-size', type=int, default=None)
+    s.choices['train'].add_argument('--failure-replay-probability',type=float,default=0.,help='Fraction of episode resets drawn from oracle-gap failure layouts')
+    s.choices['train'].add_argument('--failure-pool-size',type=int,default=512)
+    s.choices['train'].add_argument('--episodic-assignments', action='store_true', help='On-policy full-episode assignment collection, critic fitting, then PPO actor update')
+    s.choices['train'].add_argument('--assignment-episodes', type=int, default=256, help='Complete fresh episodes per episodic PPO update')
+    s.choices['train'].add_argument('--continue-run', action='store_true', help='Continue from latest checkpoint in output directory, retaining histories')
     s.choices['train'].add_argument('--initial-checkpoint', default=None,
         help='Initialize model weights from a checkpoint; optimizer and training state are reset')
     s.choices['train'].add_argument('--best-metric', choices=('case1', 'suite_damage'), default='case1')
@@ -234,6 +300,8 @@ def main():
         help='Enable model-assisted counterfactual actor credit with weight 1.0 (training only)')
     s.choices['train'].add_argument('--deadline-mask', action='store_true',
         help='Mask stationary targets that cannot be struck before horizon; saved in checkpoint and also used at evaluation')
+    s.choices['train'].add_argument('--eval-deadline-mask', action='store_true',
+        help='Apply the time-limit mask only in the resolver evaluation during training; rollouts stay unmasked')
     s.choices['train'].add_argument('--policy-clip', type=float, default=.2)
     s.choices['train'].add_argument('--policy-temperature', type=float, default=1.)
     s.choices['train'].add_argument('--guided-training', action='store_true',
@@ -244,7 +312,7 @@ def main():
         help='PPO epochs per collected batch (default: 10)')
     for command in ('train', 'evaluate'):
         s.choices[command].add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto',
-            help='Known-mode model device; auto selects CUDA when available')
+            help='Model device for known mode and exploration PPO; auto selects CUDA when available')
         s.choices[command].add_argument('--mode', choices=('known', 'belief'), default=None,
             help='known: historical fully observed task; belief: sensor-driven multi-object belief task')
         s.choices[command].add_argument('--commit-target', action='store_true',
@@ -261,6 +329,10 @@ def main():
     if hasattr(a,'eval_interval') and a.eval_interval<0:p.error('--eval-interval must be nonnegative')
     if hasattr(a,'eval_episodes') and a.eval_episodes<=0:p.error('--eval-episodes must be positive')
     if a.command == 'train':
+        if a.eval_workers <= 0:
+            p.error('--eval-workers must be positive')
+        if a.eval_screen_episodes < 0:
+            p.error('--eval-screen-episodes must be nonnegative')
         a.algorithm = 'target_coma'
         if a.model_based_advantage:
             a.lookahead_credit = 1.0

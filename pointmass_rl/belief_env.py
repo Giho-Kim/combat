@@ -14,7 +14,7 @@ import numpy as np
 from .env import Config, World, DAMAGE_REWARD_RATE, split_strike_action
 from .navigation import DubinsPath, lawnmower_waypoints, point_path
 from .belief_intel import ReportPosterior
-from .belief_sensor import detection_probabilities, cell_detection_probabilities
+from .belief_sensor import detection_probabilities, cell_detection_probabilities, union_detection_probabilities
 from .gaussian_belief import GaussianTargetBelief
 
 
@@ -251,6 +251,8 @@ class TargetBelief:
 
 
 class BeliefWorld:
+    layout_world = _BeliefLayoutWorld
+
     def __init__(self, config=None):
         self.c = config or Config(mode='belief')
         if self.c.mode != 'belief':
@@ -259,7 +261,7 @@ class BeliefWorld:
             raise ValueError('Initial belief mode models stationary game objects')
         self.n = self.c.n_agents
         # Composition keeps the historical fully observed World untouched.
-        self._world = _BeliefLayoutWorld(replace(self.c, mode='known', belief_exploration_only=False))
+        self._world = self.layout_world(replace(self.c, mode='known', belief_exploration_only=False))
         self.action_count = self.c.belief_grid**2 + self.c.n_targets
 
     @property
@@ -296,7 +298,7 @@ class BeliefWorld:
         return (w.agent_active[:, None] & (distance <= self.c.sensor_range)
                 & ((np.abs(angle) <= np.deg2rad(self.c.sensor_fov_deg)/2) | (distance < 1e-6)))
 
-    def _sense(self):
+    def _sense(self, *, refresh=True):
         w = self._world
         points = self.belief.points.reshape(-1, 2) * self.c.size
         continuous = isinstance(self.belief, GaussianTargetBelief)
@@ -351,11 +353,10 @@ class BeliefWorld:
             sensor_headings = w.heading.copy()
             sensor_active = w.agent_active.copy()
             def probability_at(points):
-                probabilities = detection_probabilities(
+                return union_detection_probabilities(
                     points, sensor_positions, sensor_headings, sensor_active, self.c.sensor_range,
                     self.c.sensor_fov_deg, self.c.detection_probability)
-                return 1-np.prod(1-probabilities, axis=0)
-            self.belief.update(probability_at, observations, w.t)
+            self.belief.update(probability_at, observations, w.t, refresh=refresh)
         else:
             self.belief.update(pd.reshape(self.belief.weights.shape), observations, w.t)
         w.discovered |= detected

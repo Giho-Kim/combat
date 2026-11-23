@@ -1,10 +1,10 @@
 {
   "mode": "belief",
-  "n_agents": 5,
+  "n_agents": 10,
   "min_agents": 5,
-  "n_targets": 5,
+  "n_targets": 10,
   "min_targets": 5,
-  "randomize_counts": false,
+  "randomize_counts": true,
   "horizon": 1800,
   "belief_grid": 8,
   "belief_turn_radius": 2.0,

@@ -302,6 +302,9 @@ def _model_critic_state(model, world, schedule):
 
 def allocated_actions(model, worlds, schedules, deterministic=False):
     """Sample every drone once and pass the joint action through unchanged."""
+    if getattr(model, 'training_settings', {}).get('action_selection') == 'sequential_current_choices':
+        from .assignment_learning import sequential_actions
+        return sequential_actions(model, worlds, schedules, deterministic)
     for (world, schedule) in zip(worlds, schedules):
         if world.t == 0:
             schedule.reset()
@@ -392,10 +395,18 @@ def checkpoint_payload(path):
 
 def model_from_checkpoint(path, config, device='cpu'):
     payload = checkpoint_payload(path)
-    if payload.get('architecture') != 'target_allocation':
+    if payload.get('architecture') not in ('target_allocation','target_allocation_temporal'):
         raise ValueError('Target Allocation requires a Target Allocation checkpoint')
     from .strike_target_actor import TargetAllocationActorCritic
-    model = TargetAllocationActorCritic(config.n_targets, config.n_agents, payload.get('hidden', 64))
+    if payload['architecture']=='target_allocation_temporal':
+        from .temporal_critic import TemporalActorCritic
+        settings=payload.get('training_settings',{})
+        if settings.get('temporal_horizon')!=config.horizon or settings.get('temporal_gamma')!=config.discount_gamma:
+            raise ValueError('Temporal checkpoint requires matching horizon and discount')
+        model=TemporalActorCritic(config.n_targets,config.n_agents,payload.get('hidden',64),config.horizon,config.discount_gamma,actor_time_embedding='actor_body.time_encoder.weight' in payload['state_dict'])
+    else:
+        model = TargetAllocationActorCritic(config.n_targets, config.n_agents, payload.get('hidden', 64),
+            actor_time_embedding='actor_body.time_encoder.weight' in payload['state_dict'])
     load_checkpoint(path, model)
     return model.to(resolve_device(device))
 
@@ -403,6 +414,15 @@ def load_checkpoint(path, model):
     payload = checkpoint_payload(path)
     if payload.get('architecture') != model.architecture:
         raise ValueError('Checkpoint architecture does not match the requested policy')
+    if ('actor_body.time_encoder.weight' in payload['state_dict']) != model.actor_body.time_embedding:
+        raise ValueError('Actor time architecture differs: start a new run for vector time embedding; use model_from_checkpoint to evaluate legacy checkpoints')
+    # Reconstruct the saved critic topology before strict loading.
+    from .graph_critic import GraphQBody
+    saved_self = 'q_body.drone_self.block.self_attn.in_proj_weight' in payload['state_dict']
+    if (model.q_body.drone_self is not None) != saved_self:
+        device = next(model.parameters()).device
+        model.q_body = GraphQBody(model.hidden, self_attention=saved_self).to(device)
+        model.target_q_body = deepcopy(model.q_body).requires_grad_(False)
     model.load_state_dict(payload['state_dict'])
     model.training_settings = payload.get('training_settings', {})
     return payload.get('metadata', {})
@@ -508,11 +528,14 @@ def _coma_update(model, optimizers, batch, probabilities, epochs, minibatch_size
             indices = indices[batch['critic_active'][indices]]
             if not len(indices):
                 continue
-            prediction = model.joint_q(batch['state'][indices], batch['joint_action'][indices])
-            loss = torch.nn.functional.huber_loss(prediction, batch['returns'][indices], delta=10.0)
+            if 'temporal_previous' in batch:
+                loss=model.q_body.completion_loss(batch['state'][indices],batch['joint_action'][indices],batch['temporal_previous'][indices],batch['temporal_next'][indices],batch['temporal_observed'][indices])
+            else:
+                prediction = model.joint_q(batch['state'][indices], batch['joint_action'][indices])
+                loss = torch.nn.functional.huber_loss(prediction, batch['returns'][indices], delta=10.0)
             optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(_critic_parameters(model), 10.0)
+            nn.utils.clip_grad_norm_(_critic_parameters(model), 5.0)
             optimizer.step()
             model.update_target(tau=settings.get('target_q_polyak_tau', 0.01))
             losses.append(loss.item())
@@ -524,6 +547,10 @@ def _coma_update(model, optimizers, batch, probabilities, epochs, minibatch_size
             batch['advantage'] += settings.get('lookahead_credit', 0.0) * batch['lookahead_advantage']
     metrics = _ppo_update(model, optimizers, batch, epochs, minibatch_size)
     metrics['q_loss'] = float(np.mean(losses)) if losses else 0.0
+    if 'temporal_previous' in batch:
+        metrics['completion_nll']=metrics['q_loss']
+        remaining=(batch['state'][:,0]*model.q_body.horizon).round().long()
+        metrics['completion_full_horizon_fraction']=float((batch['temporal_observed'].sum(-1)>=remaining).float().mean())
     return metrics
 
 def _optimizers(model, learning_rate=0.0005):
@@ -563,7 +590,7 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
                 actor_entropy = entropy[decision].mean()
                 actor_optimizer.zero_grad()
                 (actor_loss - entropy_coef * actor_entropy).backward()
-                actor_grad = nn.utils.clip_grad_norm_(list(model.actor_body.parameters()) + list(model.target_head.parameters()), 10.0)
+                actor_grad = nn.utils.clip_grad_norm_(list(model.actor_body.parameters()) + list(model.target_head.parameters()), 5.0)
                 actor_optimizer.step()
                 metrics.update(policy_loss=actor_loss.item(), entropy=actor_entropy.item(), approx_kl=(ratio - 1 - log_ratio)[decision].mean().item(), clip_fraction=((ratio - 1).abs() > policy_clip)[decision].float().mean().item(), actor_grad_norm=float(actor_grad))
             if decision.any():
@@ -583,7 +610,7 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
             critic_loss = value_loss
             critic_optimizer.zero_grad()
             critic_loss.backward()
-            critic_grad = nn.utils.clip_grad_norm_(_critic_parameters(model), 10.0)
+            critic_grad = nn.utils.clip_grad_norm_(_critic_parameters(model), 5.0)
             critic_optimizer.step()
             record = dict(value_loss=value_loss.item(), critic_grad_norm=float(critic_grad))
             records.append(record)
@@ -612,10 +639,21 @@ def _suite_checkpoint_key(resolved, unresolved):
     """Maximize the evaluation suite; break ties with unaided policy quality."""
     return (float(np.mean([resolved[f'case{i}_damage'] for i in (1, 2, 3)])), float(np.mean([unresolved[f'case{i}_damage'] for i in (1, 2, 3)])), resolved['discounted_team_return'])
 
-def evaluate_model(model, config, episodes=3, seed=10000, resolver=True):
-    """Evaluate the current actor/resolver on held-out scenario seeds."""
+def evaluate_model(model, config, episodes=3, seed=10000, resolver=True, deadline_mask=None):
+    """Evaluate the current actor/resolver on held-out scenario seeds.
+
+    deadline_mask overrides the model's time-limit mask for this evaluation only.
+    """
     from .env import World
     _validate_evaluation_episodes(config, episodes)
+    if deadline_mask is not None:
+        settings = model.training_settings
+        saved = settings.get('deadline_mask', False)
+        settings['deadline_mask'] = deadline_mask
+        try:
+            return evaluate_model(model, config, episodes, seed, resolver)
+        finally:
+            settings['deadline_mask'] = saved
     rows = []
     with torch.no_grad():
         for episode in range(episodes):
@@ -671,7 +709,7 @@ def _actor_event(world):
     finishing = world.agent_active & world.strike_participants.any(axis=0) & (world.agent_strike_progress >= world.c.strike_steps_per_life - 1)
     return bool(world.t == 0 or world.t == world.c.horizon - 1 or finishing.any())
 
-def train_target_allocation(config, total_agent_transitions, seed=7, rollout_steps=200, epochs=10, minibatch_size=None, learning_rate=0.0005, progress=False, eval_interval=10000, eval_episodes=3, eval_seed=10000, best_path=None, latest_path=None, checkpoint_dir=None, checkpoint_interval=100000, n_envs=32, diagnostics_path=None, algorithm='target_coma', entropy_coef=0.01, policy_clip=0.2, policy_temperature=1.0, actor_samples='all', guided_training=False, coma_advantage='q', critic_epochs=None, critic_minibatch_size=None, best_metric='case1', lookahead_credit=0.0, deadline_mask=False, initial_checkpoint=None, actor_target_distances=False, training_b12_probability=0.0, actor_decision_minibatches=False, target_coma_critic='graph', target_coma_actor='attention', device='auto'):
+def train_target_allocation(config, total_agent_transitions, seed=7, rollout_steps=200, epochs=10, minibatch_size=None, learning_rate=0.0005, progress=False, eval_interval=10000, eval_episodes=3, eval_seed=10000, best_path=None, latest_path=None, checkpoint_dir=None, checkpoint_interval=100000, n_envs=32, diagnostics_path=None, algorithm='target_coma', entropy_coef=0.01, policy_clip=0.2, policy_temperature=1.0, actor_samples='all', guided_training=False, coma_advantage='q', critic_epochs=None, critic_minibatch_size=None, best_metric='case1', lookahead_credit=0.0, deadline_mask=False, eval_deadline_mask=False, initial_checkpoint=None, actor_target_distances=False, training_b12_probability=0.0, actor_decision_minibatches=False, target_coma_critic='graph', target_coma_actor='attention', device='auto', start_transitions=0, previous_best_key=None, failure_replay_probability=0.0, failure_pool_size=512):
     from .env import World
     from .strike_guidance import progress_potential, avoidable_switches
     from .strike_lookahead import counterfactual_credit
@@ -682,8 +720,8 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
     rng = np.random.default_rng(seed)
     if coma_advantage not in ('q', 'sampled_return'):
         raise ValueError('coma_advantage must be q or sampled_return')
-    if target_coma_critic != 'graph' or target_coma_actor != 'attention' or actor_target_distances:
-        raise ValueError('Target Allocation uses the attention actor and graph critic')
+    if target_coma_critic not in ('graph','temporal') or target_coma_actor != 'attention' or actor_target_distances:
+        raise ValueError('Target Allocation requires attention actor and graph/temporal critic')
     if not 0 <= training_b12_probability <= 1:
         raise ValueError('training_b12_probability must be between zero and one')
     if training_b12_probability and (not _uses_balanced_thresholds(config)):
@@ -692,7 +730,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         raise ValueError('best_metric must be case1 or suite_damage')
     if not np.isfinite(lookahead_credit) or lookahead_credit < 0:
         raise ValueError('lookahead_credit must be finite and nonnegative')
-    if deadline_mask and config.target_motion_scale != 0:
+    if (deadline_mask or eval_deadline_mask) and config.target_motion_scale != 0:
         raise ValueError('deadline_mask requires stationary targets')
     if any((value is not None and value <= 0 for value in (critic_epochs, critic_minibatch_size))):
         raise ValueError('Critic training sizes must be positive')
@@ -708,21 +746,46 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         raise ValueError('entropy_coef must be nonnegative and policy_clip must be in (0, 1)')
     if policy_temperature != 1.0:
         raise ValueError('Target Allocation uses policy_temperature=1')
+    if not 0<=failure_replay_probability<=1 or failure_pool_size<1:
+        raise ValueError('Invalid failure curriculum probability or capacity')
+    curriculum=None
+    if failure_replay_probability:
+        if training_b12_probability:raise ValueError('Failure curriculum cannot mix B12 task overrides')
+        from .failure_curriculum import FailureCurriculum
+        curriculum=FailureCurriculum(failure_replay_probability,failure_pool_size)
     worlds = [World(config) for _ in range(n_envs)]
     schedules = [DecisionSchedule(config) for _ in worlds]
     for world in worlds:
-        _reset_training_world(world, rng, training_b12_probability)
+        if curriculum is None:_reset_training_world(world, rng, training_b12_probability)
+        else:curriculum.reset(world,rng)
     from .strike_target_actor import TargetAllocationActorCritic
     model_class = TargetAllocationActorCritic
-    model = model_class(config.n_targets, config.n_agents)
-    if initial_checkpoint is not None:
-        load_checkpoint(initial_checkpoint, model)
+    if target_coma_critic=='temporal':
+        if guided_training or lookahead_credit or deadline_mask:
+            raise ValueError('Temporal critic requires the unmodified reward and action space')
+        from .temporal_critic import TemporalActorCritic
+        old=checkpoint_payload(initial_checkpoint) if initial_checkpoint else None
+        actor_time=(not old) or 'actor_body.time_encoder.weight' in old['state_dict']
+        model=TemporalActorCritic(config.n_targets,config.n_agents,horizon=config.horizon,gamma=config.discount_gamma,actor_time_embedding=actor_time)
+        if old and old['architecture']=='target_allocation':
+            current=model.state_dict()
+            prefixes=('actor_body.','target_head.','q_body.drone_encoder.','q_body.target_encoder.','q_body.time_encoder.','q_body.target_reads.','q_body.drone_reads.')
+            for key,value in old['state_dict'].items():
+                if key.startswith(prefixes) and key in current and current[key].shape==value.shape:current[key]=value
+            model.load_state_dict(current)
+            model.target_q_body=deepcopy(model.q_body).requires_grad_(False)
+        elif initial_checkpoint:load_checkpoint(initial_checkpoint,model)
+    else:
+        model = model_class(config.n_targets, config.n_agents)
+        if initial_checkpoint is not None:load_checkpoint(initial_checkpoint, model)
     model.to(device)
     if progress:
         print(f'Training device: {device}', flush=True)
-    model.training_settings = dict(device=str(device), n_envs=n_envs, rollout_steps=rollout_steps, epochs=epochs, minibatch_size=minibatch_size, learning_rate=learning_rate, critic_learning_rate=learning_rate, adam_epsilon=1e-05, hidden=64, initial_checkpoint=str(initial_checkpoint) if initial_checkpoint is not None else None, optimizer_reinitialized=initial_checkpoint is not None, actor_target_distances=actor_target_distances, training_b12_probability=training_b12_probability, activation='relu', feature_normalization=True, orthogonal=True, actor_gain=0.01, value_normalization=True, huber_delta=10.0, value_clipping=0.2, policy_clipping=policy_clip, entropy_coef=entropy_coef, policy_temperature=policy_temperature, target_type_encoding='one_hot', actor_sample_mode=actor_samples, actor_minibatches='decision_rows_only' if actor_decision_minibatches else 'all_rollout_rows', guided_training=guided_training, lookahead_credit=lookahead_credit, deadline_mask=deadline_mask, lookahead_credit_description='auxiliary_counterfactual_assignment_damage_forecast' if lookahead_credit else None, progress_shaping_scale=1.0 if guided_training else 0.0, switch_cost=0.02 if guided_training else 0.0, training_reward='target_value_type3_1_type2_2_type1_5', success_bonus=0.0, damage_reward_rate=DAMAGE_REWARD_RATE, value_loss_coef=1.0, max_grad_norm=10.0, recurrent=False, gamma=config.discount_gamma, gae_lambda=config.gae_lambda, finite_horizon_terminal=True, rollout_execution='synchronous_batched', decision_interval=config.decision_interval, commit_target=config.commit_target, training_distribution='B12_mixture_with_uniform_B_distance_25_58' if training_b12_probability else 'uniform_B_5_8_9_11_12_distance_25_58' if evaluation_task_for_episode(config, 0) is not None else 'uniform_agent_target_counts_random_majority_F1_iid_types' if config.randomize_counts and config.randomize_target_composition else 'random', selection_allocation='direct_joint_action_no_rejection_or_reselection')
+    model.training_settings = dict(device=str(device), n_envs=n_envs, rollout_steps=rollout_steps, epochs=epochs, minibatch_size=minibatch_size, learning_rate=learning_rate, critic_learning_rate=learning_rate, adam_epsilon=1e-05, hidden=64, initial_checkpoint=str(initial_checkpoint) if initial_checkpoint is not None else None, optimizer_reinitialized=initial_checkpoint is not None, actor_target_distances=actor_target_distances, training_b12_probability=training_b12_probability, activation='relu', feature_normalization=True, orthogonal=True, actor_gain=0.01, value_normalization=True, huber_delta=10.0, value_clipping=0.2, policy_clipping=policy_clip, entropy_coef=entropy_coef, policy_temperature=policy_temperature, target_type_encoding='one_hot', actor_sample_mode=actor_samples, actor_minibatches='decision_rows_only' if actor_decision_minibatches else 'all_rollout_rows', guided_training=guided_training, lookahead_credit=lookahead_credit, deadline_mask=deadline_mask, lookahead_credit_description='auxiliary_counterfactual_assignment_damage_forecast' if lookahead_credit else None, progress_shaping_scale=1.0 if guided_training else 0.0, switch_cost=0.02 if guided_training else 0.0, training_reward='target_value_type3_1_type2_2_type1_5', success_bonus=0.0, damage_reward_rate=DAMAGE_REWARD_RATE, value_loss_coef=1.0, max_grad_norm=5.0, recurrent=False, gamma=config.discount_gamma, gae_lambda=config.gae_lambda, finite_horizon_terminal=True, rollout_execution='synchronous_batched', decision_interval=config.decision_interval, commit_target=config.commit_target, training_distribution='B12_mixture_with_uniform_B_distance_25_58' if training_b12_probability else 'uniform_B_5_8_9_11_12_distance_25_58' if evaluation_task_for_episode(config, 0) is not None else 'uniform_agent_target_counts_random_majority_F1_iid_types' if config.randomize_counts and config.randomize_target_composition else 'random', selection_allocation='direct_joint_action_no_rejection_or_reselection')
+    model.training_settings.update(failure_replay_probability=failure_replay_probability,failure_pool_size=failure_pool_size,curriculum='oracle_gap_prioritized_initial_layouts' if curriculum else None)
     model.training_settings['evaluation_allocation'] = 'actor_score_priority_rejection_reselection'
     model.training_settings['evaluation_modes'] = ['no_resolver', 'resolver']
+    model.training_settings['eval_deadline_mask'] = eval_deadline_mask
     model.training_settings['best_evaluation_mode'] = 'resolver'
     model.training_settings['best_metric'] = best_metric
     if getattr(model, 'drone_velocity', False):
@@ -738,7 +801,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
     if getattr(model, 'critic_previous_actions', False):
         model.training_settings['critic_previous_actual_choice'] = 'active_target_major_one_hot'
     if isinstance(model, _TargetQBase):
-        model.training_settings.update(algorithm='coma_counterfactual_advantage_with_ppo_clip', critic='centralized_joint_action_Q_with_target_Q', actor_advantage='Q(s,a)-sum_a_i pi_old(a_i|o_i)Q(s,(a_-i,a_i))', coma_advantage=coma_advantage, critic_epochs=critic_epochs if critic_epochs is not None else 4 * epochs, critic_minibatch_size=critic_minibatch_size, q_target='sampled_SARSA_TD_lambda_return', value_normalization=False, value_clipping=None, target_q_polyak_tau=0.01, target_q_update_frequency='every_critic_optimizer_step', critic_before_actor=True)
+        model.training_settings.update(algorithm='coma_counterfactual_advantage_with_ppo_clip', critic='centralized_joint_action_Q_with_target_Q', actor_advantage='Q(s,a)-sum_a_i pi_old(a_i|o_i)Q(s,(a_-i,a_i))', coma_advantage=coma_advantage, critic_epochs=critic_epochs if critic_epochs is not None else 2 * epochs, critic_minibatch_size=critic_minibatch_size, q_target='sampled_SARSA_TD_lambda_return', value_normalization=False, value_clipping=None, target_q_polyak_tau=0.01, target_q_update_frequency='every_critic_optimizer_step', critic_before_actor=True)
         model.training_settings['critic'] = 'pair_embedding_target_concat_joint_Q_with_target_Q'
         model.training_settings['critic_action_encoding'] = 'encode_selected_drone_target_pairs_then_pool_per_target'
         model.training_settings['critic_team_input'] = 'raw_state_concat_ordered_target_pools_and_counts'
@@ -749,12 +812,16 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         if lookahead_credit:
             model.training_settings['algorithm'] = 'model_assisted_counterfactual_ppo'
             model.training_settings['actor_advantage'] += f'+{lookahead_credit:g}*counterfactual_assignment_damage_forecast'
+    model.training_settings['critic_type_self_attention'] = model.q_body.drone_self is not None
+    if target_coma_critic=='temporal':
+        model.training_settings.update(critic='target_completion_time_distribution',temporal_horizon=config.horizon,temporal_gamma=config.discount_gamma,q_target='observed_completion_paths_with_censoring',temporal_life_cap=2,critic_team_input='sum_expected_target_rewards_before_deadline',critic_loss='completion_path_negative_log_likelihood',huber_delta=None)
     optimizers = _optimizers(model, learning_rate)
-    (completed, episode_rows, evaluation_rows) = (0, [], [])
-    best_key = (-float('inf'), -float('inf'))
+    (completed, episode_rows, evaluation_rows) = (start_transitions, [], [])
+    end_transitions = start_transitions + total_agent_transitions
+    best_key = previous_best_key if previous_best_key is not None else (-float('inf'), -float('inf'))
     baseline_evaluations = None
-    next_eval = eval_interval if eval_interval > 0 else None
-    next_checkpoint = checkpoint_interval if checkpoint_dir is not None else None
+    next_eval = ((start_transitions // eval_interval) + 1) * eval_interval if eval_interval > 0 else None
+    next_checkpoint = ((start_transitions // checkpoint_interval) + 1) * checkpoint_interval if checkpoint_dir is not None else None
     progress_bar = tqdm(total=total_agent_transitions, desc='Train', unit='transition', dynamic_ncols=True, disable=not progress)
 
     def run_evaluation(agent_transitions):
@@ -766,7 +833,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             baseline_evaluations = {'random': evaluate_baseline(RandomPolicy, config, eval_episodes, eval_seed), 'nearest': evaluate_baseline(NearestTargetPolicy, config, eval_episodes, eval_seed), 'type_priority': evaluate_baseline(TypePriorityPolicy, config, eval_episodes, eval_seed)}
         evaluations = dict(baseline_evaluations)
         for (mode, enabled) in (('no_resolver', False), ('resolver', True)):
-            evaluations[f'{algorithm}_{mode}'] = evaluate_model(model, config, eval_episodes, eval_seed, resolver=enabled)
+            evaluations[f'{algorithm}_{mode}'] = evaluate_model(model, config, eval_episodes, eval_seed, resolver=enabled, deadline_mask=True if enabled and eval_deadline_mask else None)
         task_evaluation = evaluations[f'{algorithm}_resolver']
         policy_success = task_evaluation['mission_success']
         policy_return = task_evaluation['team_return']
@@ -800,13 +867,19 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             damage_display = f'D_by_case=[{damage_by_task}]' if damage_by_task else f"D={evaluation['score']:.3f}"
             case_one_display = f" case1_return={evaluation['case1_team_return']:.3f} case1_success={evaluation['case1_success']:.3f}" if 'case1_team_return' in evaluation else ''
             progress_bar.write(f"Eval @ {agent_transitions:,} [{policy_name}]: {damage_display} discounted_return={evaluation['discounted_team_return']:.3f}{case_one_display}")
-    if next_eval is not None:
+        if checkpoint_dir is not None:
+            # Preserve each completed evaluation while a long training run is active.
+            fields=list(dict.fromkeys(key for row in evaluation_rows for key in row))
+            with (Path(checkpoint_dir)/'training_evaluations.csv').open('w',newline='') as stream:
+                writer=csv.DictWriter(stream,fieldnames=fields);writer.writeheader();writer.writerows(evaluation_rows)
+    if next_eval is not None and start_transitions == 0:
         run_evaluation(0)
-    while completed < total_agent_transitions:
-        steps = min(rollout_steps, max(1, int(np.ceil((total_agent_transitions - completed) / (config.n_agents * n_envs)))))
+    while completed < end_transitions:
+        steps = min(rollout_steps, max(1, int(np.ceil((end_transitions - completed) / (config.n_agents * n_envs)))))
         (observations, states, targets, logps, action_masks, values) = ([] for _ in range(6))
         (next_values, rewards, dones, active, decisions) = ([] for _ in range(5))
         allocation_records = []
+        temporal_damage=[]
         lookahead_advantages = []
         (shaping_total, switch_total) = (0.0, 0)
         collected = 0
@@ -828,10 +901,13 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
                 lookahead_advantages.append(np.stack([counterfactual_credit(world, action['target'][index], traces[0]['probs'][index]) for (index, world) in enumerate(worlds)]))
             active_before = np.stack([world.agent_active.copy() for world in worlds])
             (step_rewards, step_dones, completed_episodes) = ([], [], [])
+            damage_step=[]
             for (env_index, world) in enumerate(worlds):
                 potential = progress_potential(world) if guided_training else 0.0
                 switches = avoidable_switches(world, action['target'][env_index]) if guided_training else 0
+                life_before=world.target_life.copy() if target_coma_critic=='temporal' else None
                 (_, reward, terminated, truncated, metrics) = world.step(strike_action(action['target'][env_index]))
+                if life_before is not None:damage_step.append(life_before-world.target_life)
                 shaping = config.discount_gamma * progress_potential(world) - potential if guided_training else 0.0
                 step_rewards.append(float(np.sum(reward)) + shaping - 0.02 * switches)
                 shaping_total += shaping
@@ -842,6 +918,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             with torch.no_grad():
                 next_state = np.stack([_model_critic_state(model, world, schedule) for (world, schedule) in zip(worlds, schedules)])
                 next_value = torch.zeros(n_envs, device=device) if isinstance(model, _TargetQBase) else model.values(model_tensor(model, next_state, dtype=torch.float32))
+            if target_coma_critic=='temporal':temporal_damage.append(damage_step)
             states.append(state)
             values.append(value.detach().cpu().numpy())
             next_values.append(next_value.detach().cpu().numpy())
@@ -850,8 +927,10 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             active.append(active_before)
             collected += int(active_before.sum())
             for (world, metrics) in completed_episodes:
+                if curriculum:curriculum.record(world,metrics['score'])
                 episode_rows.append(dict(agent_transitions=completed + collected, **metrics))
-                _reset_training_world(world, rng, training_b12_probability)
+                if curriculum is None:_reset_training_world(world, rng, training_b12_probability)
+                else:curriculum.reset(world,rng)
         values_array = np.asarray(values)
         next_values_array = np.asarray(next_values)
         if isinstance(model, _TargetQBase):
@@ -881,6 +960,9 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
                 actor_active.append(active[step])
                 actor_advantages.append(np.repeat(team_advantage[step, :, None], config.n_agents, axis=-1))
         tensors = _batch(observations, states, targets, logps, action_masks, actor_advantages, team_returns, actor_active, decisions, values_array, critic_active=np.asarray(active).any(axis=-1))
+        if target_coma_critic=='temporal':
+            from .temporal_critic import trajectory_labels
+            tensors.update({k:torch.as_tensor(v) for k,v in trajectory_labels(temporal_damage,dones,config.horizon).items()})
         if lookahead_credit:
             tensors['lookahead_advantage'] = torch.as_tensor(np.asarray(lookahead_advantages).reshape(-1), dtype=torch.float32)
         tensors = {key: value.to(device) for (key, value) in tensors.items()}
@@ -901,6 +983,9 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
                 if not has_header:
                     writer.writeheader()
                 writer.writerow(diagnostics)
+        if curriculum and checkpoint_dir is not None:
+            curriculum.save(Path(checkpoint_dir)/'failure_curriculum.json')
+            progress_bar.write(f'Curriculum @ {completed:,}: pool={len(curriculum.pool)}, fresh={curriculum.fresh}, replayed={curriculum.replayed}')
         progress_bar.update(min(count, total_agent_transitions - progress_bar.n))
         while next_checkpoint is not None and completed >= next_checkpoint:
             checkpoint_path = Path(checkpoint_dir) / f'checkpoint_{next_checkpoint}.pt'

@@ -22,6 +22,9 @@ from .env import Config, strike_action
 from .strike_ppo import _td_lambda_returns
 
 
+GUARDED_EXPLORATION_RESOLVER = 'score_time_limit_revisit_guard'
+
+
 def make_world(config):
     if config.belief_exploration_only:
         from .exploration import PolygonExplorationWorld
@@ -73,13 +76,19 @@ def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None
             update='Q warm-up; PPO with COMA advantages and auxiliary Q loss',
             reward='value of first detections only; no consumption',
             actions='full search-support rectangular partition; hold until one sweep completes')
+        if model.architecture == 'polygon_exploration_decision_ppo':
+            payload['training_settings'].update(
+                policy='Target Allocation peer actor and action-independent graph V; separate encoders',
+                update='complete polygon decisions; full-episode Monte Carlo return minus behavior V; PPO',
+                discount='physical-step gamma within/across options; no GAE or Q bootstrap')
     torch.save(payload,Path(path))
 
 
 def load_belief_checkpoint(path, config=None):
     payload=torch.load(path,map_location='cpu',weights_only=False)
     if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2',
-                                           'polygon_exploration_target_allocation'):
+                                           'polygon_exploration_target_allocation',
+                                           'polygon_exploration_decision_ppo'):
         raise ValueError('Belief mode requires a belief checkpoint; Target Allocation uses --mode known')
     config=config or Config(**payload['config'])
     if config.mode!='belief':
@@ -87,7 +96,13 @@ def load_belief_checkpoint(path, config=None):
     features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
     if features != payload.get('features', 14):
         raise ValueError('Checkpoint belief representation differs from config; train a new model for gaussian_uniform')
-    model=make_model(config, payload['hidden'])
+    if payload['architecture'] == 'polygon_exploration_decision_ppo':
+        if not config.belief_exploration_only:
+            raise ValueError('Decision PPO checkpoint requires exploration-only config')
+        from .exploration import ExplorationPPOActorCritic
+        model = ExplorationPPOActorCritic(payload['hidden'])
+    else:
+        model=make_model(config, payload['hidden'])
     if model.architecture != payload['architecture']:
         raise ValueError('Checkpoint policy and configured belief task differ')
     model.load_state_dict(payload['state_dict'])
@@ -114,26 +129,102 @@ def baseline_action(obs, name, rng):
     return np.array(action),np.eye(mask.shape[1],dtype=np.float32)[action]
 
 
+class ExplorationRevisitGuard:
+    def __init__(self, world):
+        self.centers = world.belief.bounds.mean(axis=1)
+        self.previously_assigned = set()
+        self.completed = set()
+        self.last_assignment = {}
+        self.interventions = 0
+
+    def apply(self, world, decision, reachable, action, probs):
+        deciding = np.flatnonzero(decision)
+        state = world._world
+        if deciding.size and state.t > 0 and world.belief.remaining_types.sum() == 0:
+            self.completed.update(self.last_assignment[i] for i in deciding
+                                  if i in self.last_assignment)
+            assigned = set(action[state.agent_active])
+            mass = world.belief.weights.sum(axis=1)
+            distance_km = np.linalg.norm(state.pos[:, None] - self.centers[None], axis=-1) / 10
+            scores = mass[None, :] / (1 + distance_km)
+            for i in deciding:
+                old = action[i]
+                if old not in self.completed:
+                    continue
+                unavailable = assigned | self.previously_assigned
+                candidates = [j for j in np.flatnonzero(reachable[i]) if j not in unavailable]
+                if not candidates:
+                    continue
+                new = candidates[np.argmax(scores[i, candidates])]
+                if scores[i, new] <= scores[i, old]:
+                    continue
+                action[i] = new
+                probs[i].fill(0.)
+                probs[i, new] = 1.
+                assigned.discard(old)
+                assigned.add(new)
+                self.interventions += 1
+        for i in deciding:
+            self.last_assignment[i] = action[i]
+            self.previously_assigned.add(action[i])
+
+
 def evaluate_belief(model, config, episodes=30, seed=10000, resolver='none', baseline=None,
                     replay_frames=None):
+    guarded = resolver == GUARDED_EXPLORATION_RESOLVER
+    if guarded and (baseline is not None or not config.belief_exploration_only
+                    or config.belief_representation != 'gaussian_uniform'):
+        raise ValueError('The revisit guard requires Gaussian belief exploration policy evaluation')
+    action_resolver = 'score_time_limit' if guarded else resolver
     rows=[]
     for episode in range(episodes):
         world=make_world(config)
         obs=world.reset(seed+episode)
+        guard = ExplorationRevisitGuard(world) if guarded else None
         recording = replay_frames is not None and episode == episodes-1
         if recording:
             from .belief_report import frame
             replay_frames.append(frame(world,obs))
         rng=np.random.default_rng(seed+episode)
+        planner = None
+        if baseline == 'belief_lookahead':
+            from .belief_lookahead import BeliefLookahead
+            planner = BeliefLookahead(world)
+        fast_exploration = (config.belief_exploration_only and not recording
+                            and config.belief_representation == 'gaussian_uniform'
+                            and (baseline is None or planner is not None))
+        one_hot = np.eye(obs['mask'].shape[1], dtype=np.float32)
         while not world.done:
-            action,prob=(baseline_action(obs,baseline,rng) if baseline else
-                         choose_action(model,obs,deterministic=True,resolver=resolver))
-            obs,_,_,_,metrics=world.step(strike_action(action),prob)
+            if fast_exploration and (obs is None or not obs['decision'].any()):
+                mask = world.action_mask()[0] if obs is None else obs['mask']
+                action = mask.argmax(axis=1)
+                prob = one_hot[action]
+            elif planner is not None:
+                action = planner.choose(obs)
+                prob = one_hot[action]
+            elif baseline:
+                action, prob = baseline_action(obs, baseline, rng)
+            else:
+                candidate_mask = world.entry_deadline_mask() if action_resolver == 'score_time_limit' else None
+                action, prob = choose_action(model, obs, deterministic=True, resolver=action_resolver,
+                                             candidate_mask=candidate_mask)
+                if guard is not None:
+                    guard.apply(world, obs['decision'], candidate_mask, action, prob)
+            if fast_exploration:
+                obs, _, _, _, metrics = world.step(strike_action(action), prob, decisions_only=True)
+            else:
+                obs, _, _, _, metrics = world.step(strike_action(action), prob)
             if recording:
                 replay_frames.append(frame(world,obs,action))
+        if guard is not None:
+            metrics['interventions'] = guard.interventions
         rows.append(dict(seed=seed+episode,**metrics))
+    return summarize_belief_rows(rows),rows
+
+
+def summarize_belief_rows(rows):
     keys=('team_return','discounted_team_return','mission_success','discovery_fraction','discovered_objects')
-    return {key:float(np.mean([r[key] for r in rows])) for key in keys},rows
+    return {key:float(np.mean([r[key] for r in rows])) for key in keys}
 
 
 def _write_csv(path, rows):
@@ -307,6 +398,15 @@ def command_train(args, config):
         raise ValueError('Belief mode requires graph/attention, all decision samples, and no legacy execution interventions')
     if args.critic_minibatch_size is not None and args.critic_minibatch_size!=args.minibatch_size:
         raise ValueError('Belief mode uses a shared --minibatch-size in environment steps')
+    if getattr(args, 'exploration_ppo', False):
+        from .exploration_ppo import train_exploration_ppo
+        return train_exploration_ppo(config, args.steps, args.out, seed=args.seed,
+            n_envs=args.n_envs, rollout_decisions=args.rollout_steps, epochs=args.epochs,
+            critic_epochs=args.critic_epochs or args.epochs, minibatch_size=args.minibatch_size or 32,
+            learning_rate=args.learning_rate, entropy_coef=args.entropy_coef, policy_clip=args.policy_clip,
+            eval_interval=args.eval_interval, eval_episodes=args.eval_episodes, eval_seed=args.eval_seed,
+            device=args.device, eval_workers=args.eval_workers, eval_screen_episodes=args.eval_screen_episodes,
+            eval_revisit_guard=getattr(args, 'eval_revisit_guard', False))
     return train_belief(config,args.steps,args.out,seed=args.seed,n_envs=args.n_envs,
             rollout_steps=args.rollout_steps,epochs=args.epochs,critic_epochs=args.critic_epochs or args.epochs,
             minibatch_size=args.minibatch_size or 32,learning_rate=args.learning_rate,
@@ -318,8 +418,14 @@ def command_evaluate(args, config):
     torch.set_num_threads(1)
     model,config,_=load_belief_checkpoint(args.model,config) if args.model else (None,config,None)
     summaries,all_rows,runs={},[],{}
-    for name in ('random','nearest','type_priority') + (('none','score','distance') if model else ()):
-        baseline=name if name in ('random','nearest','type_priority') else None
+    policies = (('none','score_time_limit') if config.belief_exploration_only and model is not None else
+                ('random','nearest','type_priority') + (('none','score','distance') if model else ()))
+    if getattr(args, 'belief_lookahead', False):
+        if not config.belief_exploration_only or config.belief_representation != 'gaussian_uniform':
+            raise ValueError('--belief-lookahead requires Gaussian polygon exploration mode')
+        policies = (*policies, 'belief_lookahead') if model is not None else ('belief_lookahead',)
+    for name in policies:
+        baseline=name if name in ('random','nearest','type_priority','belief_lookahead') else None
         frames=[]
         summary,rows=evaluate_belief(model,config,args.episodes,args.seed,
                                     resolver=name if baseline is None else 'none',baseline=baseline,

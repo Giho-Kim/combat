@@ -85,6 +85,61 @@ class DubinsPath:
         return position, heading, budget
 
 
+def rectangle_entry_distance(path, position, heading, lo, hi):
+    """First intersection of a Dubins path with a closed axis-aligned region.
+
+    Intersect straight segments and circular arcs analytically, including an
+    entry followed by exit within one physics step. Return infinity on a miss.
+    The path is inspected without consuming its segments.
+    """
+    position = np.asarray(position, dtype=float).copy()
+    lo, hi = np.asarray(lo), np.asarray(hi)
+    elapsed, tolerance = 0., 1e-9
+
+    def inside(point):
+        return bool(np.all(point >= lo-tolerance) and np.all(point <= hi+tolerance))
+
+    for turn, length in path.segments:
+        if inside(position):
+            return elapsed
+        candidates = []
+        if turn == 0:
+            direction = np.array([math.cos(heading), math.sin(heading)])
+            for axis in (0, 1):
+                if abs(direction[axis]) < 1e-12:
+                    continue
+                for boundary in (lo[axis], hi[axis]):
+                    distance = (boundary-position[axis])/direction[axis]
+                    if -tolerance <= distance <= length+tolerance and inside(position+distance*direction):
+                        candidates.append(max(0., distance))
+        else:
+            radius = path.radius
+            center = position+turn*radius*np.array([-math.sin(heading), math.cos(heading)])
+            start_angle = math.atan2(position[1]-center[1], position[0]-center[0])
+            for axis in (0, 1):
+                other = 1-axis
+                for boundary in (lo[axis], hi[axis]):
+                    squared = radius**2-(boundary-center[axis])**2
+                    if squared < -tolerance:
+                        continue
+                    for sign in (-1, 1):
+                        point = center.copy()
+                        point[axis] = boundary
+                        point[other] += sign*math.sqrt(max(0., squared))
+                        angle = math.atan2(point[1]-center[1], point[0]-center[0])
+                        delta = (turn*(angle-start_angle)) % TAU
+                        if TAU-delta < 1e-10:
+                            delta = 0.
+                        distance = radius*delta
+                        if distance <= length+tolerance and inside(point):
+                            candidates.append(distance)
+        if candidates:
+            return elapsed+min(candidates)
+        position, heading = advance(position, heading, length, turn, path.radius)
+        elapsed += length
+    return elapsed if inside(position) else math.inf
+
+
 def point_path(position, heading, goal, radius):
     delta = np.asarray(goal)-position
     bearing = math.atan2(delta[1], delta[0])

@@ -9,8 +9,8 @@ from .graph_critic import RelationAttention
 from .belief_env import BELIEF_FEATURES
 
 
-def stack_observations(observations):
-    return {k:torch.as_tensor(np.stack([o[k] for o in observations])) for k in observations[0]}
+def stack_observations(observations, device=None):
+    return {k:torch.as_tensor(np.stack([o[k] for o in observations]), device=device) for k in observations[0]}
 
 
 def subset(batch, indices):
@@ -132,14 +132,22 @@ class BeliefActorCritic(nn.Module):
 
 
 @torch.no_grad()
-def choose_action(model, obs, deterministic=False, resolver='none'):
-    batch = stack_observations([obs])
-    logits = model.actor_logits(batch)[0]
+def choose_action(model, obs, deterministic=False, resolver='none', candidate_mask=None):
+    batch = stack_observations([obs], device=next(model.parameters()).device)
+    # The environment and resolver use NumPy/CPU; actor inference can use CUDA.
+    logits = model.actor_logits(batch)[0].cpu()
     masks = torch.as_tensor(obs['mask']).clone()
+    if resolver not in ('none','score','distance','score_time_limit'):
+        raise ValueError('Unknown resolver')
+    if resolver == 'score_time_limit':
+        if candidate_mask is None:
+            raise ValueError('score_time_limit requires the environment entry deadline mask')
+        masks &= torch.as_tensor(candidate_mask, dtype=torch.bool)
+        if not masks.any(-1).all():
+            raise ValueError('Entry deadline mask must retain at least one action per drone')
+    base_masks = masks.clone()
     distribution = Categorical(logits=logits.masked_fill(~masks,-torch.inf))
     action = distribution.probs.argmax(-1) if deterministic else distribution.sample()
-    if resolver not in ('none','score','distance'):
-        raise ValueError('Unknown resolver')
     if resolver != 'none':
         rejected = torch.zeros_like(masks)
         # Each search component has one destination, so assign one drone to it.
@@ -153,7 +161,7 @@ def choose_action(model, obs, deterministic=False, resolver='none'):
                 capacity = (int(round(obs['beliefs'][j,8]*2))
                             if obs['beliefs'][j,10]>=.5 else 1)
                 def priority(i):
-                    value = (-float(logits[i,j]) if resolver=='score' else
+                    value = (-float(logits[i,j]) if resolver in ('score','score_time_limit') else
                              float(np.linalg.norm(obs['drones'][i,:2]-obs['beliefs'][j,12:14])))
                     return (bool(obs['decision'][i]), not bool(obs['drones'][i,3]),value,i)
                 ids.sort(key=priority)
@@ -161,7 +169,7 @@ def choose_action(model, obs, deterministic=False, resolver='none'):
                     if not obs['decision'][i]:
                         continue
                     rejected[i,j]=True
-                    alternatives = torch.as_tensor(obs['mask'][i]) & ~rejected[i]
+                    alternatives = base_masks[i] & ~rejected[i]
                     if alternatives.any():
                         masks[i]=alternatives
                         dist = Categorical(logits=logits[i].masked_fill(~alternatives,-torch.inf))

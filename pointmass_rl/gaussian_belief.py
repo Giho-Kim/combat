@@ -43,8 +43,8 @@ class LocalBackground:
         values = np.exp(-np.square(delta).sum(-1)/(2*self.sigma**2))
         return values/np.maximum(values.sum(-1, keepdims=True), 1e-300)
 
-    def update(self, probability):
-        exposure = (self.measure*probability.ravel())@self.basis
+    def update(self, probability, observed):
+        exposure = (self.measure[observed]*probability[observed])@self.basis[observed]
         exposure = np.clip(exposure, 0, 1)
         removed = self.mass*exposure
         redistribution = self.neighbours*(1-exposure[None])
@@ -118,6 +118,11 @@ class GaussianTargetBelief:
         self.valid = np.zeros(self.capacity, dtype=bool)
         self.goals = np.zeros((self.capacity, 2))
         self._quadrature()
+        points = self.integration_points.reshape(-1, 2)
+        self._moment_origin = config.size/2
+        self._moment_xy = np.ascontiguousarray((points-self._moment_origin).T)
+        x, y = self._moment_xy
+        self._moments = np.ascontiguousarray(np.stack((x, y, x*x, x*y, y*y)))
         # The background is a continuous product of observation likelihoods.
         # Values at integration/display points are caches of that function,
         # not independent cells. Arbitrary locations use the same history.
@@ -128,7 +133,7 @@ class GaussianTargetBelief:
         self.local_background = (LocalBackground(config, self.integration_points,
                                  self.integration_weights, self.points*config.size)
                                  if config.belief_background_update == 'local' else None)
-        self._background_exposure_log_display = np.zeros(self.points.shape[:-1])
+        self._local_background_dirty = False
         self.refresh(0)
         self.heat_scale = max(float(self.weights.max()), 1e-12)
 
@@ -166,7 +171,36 @@ class GaussianTargetBelief:
             result[component['type']-1] += component['remaining']
         return result
 
-    def update(self, detection_probability, observations, time):
+    def _miss_moment_update(self, component, observed, probabilities, weight):
+        """Subtract observed mass and its moments from the prior integrals."""
+        mean_x, mean_y = component['mean']-self._moment_origin
+        x = self._moment_xy[0]-mean_x
+        y = self._moment_xy[1]-mean_y
+        inverse = np.linalg.inv(component['covariance'])
+        density = np.exp(-.5*(inverse[0, 0]*x*x + 2*inverse[0, 1]*x*y + inverse[1, 1]*y*y))
+        density *= weight
+        total = float(density.sum())
+        if total <= np.finfo(float).tiny:
+            return None
+        prior = self._moments @ density / total
+        removed = density[observed]*probabilities / total
+        survival = 1-float(removed.sum())
+        if survival < 1e-7:
+            # If almost everything is detected, subtraction loses precision.
+            remaining = density/total
+            remaining[observed] *= 1-probabilities
+            survival = max(float(remaining.sum()), 1e-15)
+            posterior = (self._moments @ remaining)/survival
+        else:
+            posterior = (prior - self._moments[:, observed] @ removed)/survival
+        return prior, posterior, survival
+
+    @staticmethod
+    def _moment_covariance(moment):
+        x, y, xx, xy, yy = moment
+        return np.array([[xx-x*x, xy-x*y], [xy-x*y, yy-y*y]])
+
+    def update(self, detection_probability, observations, time, *, refresh=True):
         """Use only observed position/type to associate a new detection.
 
         Handles only deduplicate repeated sightings of already discovered
@@ -203,25 +237,25 @@ class GaussianTargetBelief:
         # the observation is uninformative. This is a bounded approximation.
         points = self.integration_points.reshape(-1, 2)
         pd = np.clip(detection_probability(points), 0, 1)
+        observed = np.flatnonzero(pd)
+        observed_pd = pd[observed]
         log_survival = np.zeros(len(self.components))
-        if np.any(pd):
+        if len(observed):
+            weight = self.integration_weights.ravel()
             for index, component in enumerate(self.components):
-                prior = self._density(component, points)*self.integration_weights.ravel()
-                prior /= max(float(prior.sum()), np.finfo(float).tiny)
-                posterior = prior*(1-pd)
-                survival = max(float(posterior.sum()), 1e-15)
+                if component['remaining'] <= 0:
+                    continue
+                moments = self._miss_moment_update(component, observed, observed_pd, weight)
+                if moments is None:
+                    continue
+                prior, posterior, survival = moments
                 log_survival[index] = np.log(survival)
-                posterior /= survival
-                prior_mean = prior@points
-                posterior_mean = posterior@points
-                prior_delta, posterior_delta = points-prior_mean, points-posterior_mean
-                prior_cov = (prior_delta*prior[:, None]).T@prior_delta
-                posterior_cov = (posterior_delta*posterior[:, None]).T@posterior_delta
-                covariance = component['covariance']+posterior_cov-prior_cov
+                covariance = (component['covariance'] + self._moment_covariance(posterior)
+                              - self._moment_covariance(prior))
                 values, vectors = np.linalg.eigh((covariance+covariance.T)/2)
                 floor = self.c.belief_gaussian_min_sigma**2
                 component['covariance'] = (vectors*np.maximum(values, floor))@vectors.T
-                component['mean'] = np.clip(component['mean']+posterior_mean-prior_mean,
+                component['mean'] = np.clip(component['mean']+posterior[:2]-prior[:2],
                                              self.c.belief_search_margin,
                                              self.c.size-self.c.belief_search_margin)
         log_likelihood = self.membership@log_survival
@@ -232,22 +266,20 @@ class GaussianTargetBelief:
         self.subset_probability = probability/probability.sum()
         for component, remaining in zip(self.components, self.subset_probability@self.membership):
             component['remaining'] = float(remaining)
-        if self.c.belief_background_redistribute and np.any(pd):
-            display_pd = detection_probability((self.points*self.c.size).reshape(-1, 2))
-            self._background_exposure_log_display += self._log_miss(display_pd).reshape(self.points.shape[:-1])
+        if self.c.belief_background_redistribute and len(observed):
             if self.local_background is not None:
-                self.local_background.update(pd)
-                self._background_log_normalizer = 0.
-                self._background_log_integral = np.log(self.local_background.basis@self.local_background.mass).reshape(self.integration_weights.shape)
-                self._background_log_display = np.log(self.local_background.display_basis@self.local_background.mass).reshape(self.points.shape[:-1])
+                self.local_background.update(pd, observed)
+                self._local_background_dirty = True
             else:
+                display_pd = detection_probability((self.points*self.c.size).reshape(-1, 2))
                 self.background_history.append(detection_probability)
                 self._background_log_integral += self._log_miss(pd).reshape(self.integration_weights.shape)
                 self._background_log_display += self._log_miss(display_pd).reshape(self.points.shape[:-1])
                 peak = float(self._background_log_integral.max())
                 self._background_log_normalizer = peak+np.log(float(
                     (np.exp(self._background_log_integral-peak)*self.integration_weights).sum()))
-        self.refresh(time)
+        if refresh:
+            self.refresh(time)
 
     @staticmethod
     def _log_miss(probability):
@@ -320,6 +352,11 @@ class GaussianTargetBelief:
         return report_evidence/total
 
     def refresh(self, time):
+        if self._local_background_dirty:
+            self._background_log_normalizer = 0.
+            self._background_log_integral = np.log(self.local_background.basis@self.local_background.mass).reshape(self.integration_weights.shape)
+            self._background_log_display = np.log(self.local_background.display_basis@self.local_background.mass).reshape(self.points.shape[:-1])
+            self._local_background_dirty = False
         c = self.c
         self.records.fill(0)
         self.valid.fill(False)

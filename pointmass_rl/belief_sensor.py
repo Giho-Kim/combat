@@ -42,3 +42,20 @@ def cell_detection_probabilities(centers, width, positions, headings, active,
                                  sensor_range, fov_degrees, peak_probability)
     combined = 1-np.prod(1-pd, axis=0)
     return combined.reshape(-1, 9)@sample_weights
+
+
+def union_detection_probabilities(points, positions, headings, active, sensor_range,
+                                  fov_degrees, peak_probability):
+    """Combine sensor likelihoods, evaluating the costly math only in range."""
+    points = np.asarray(points)
+    miss = np.ones(len(points))
+    for i in np.flatnonzero(active):
+        # Outside this square the circular sensor likelihood is exactly zero.
+        x, y = positions[i]
+        near = ((np.abs(points[:, 0]-x) <= sensor_range)
+                & (np.abs(points[:, 1]-y) <= sensor_range))
+        if near.any():
+            pd = detection_probabilities(points[near], positions[i:i+1],
+                headings[i:i+1], [True], sensor_range, fov_degrees, peak_probability)
+            miss[near] *= 1-pd[0]
+    return 1-miss
