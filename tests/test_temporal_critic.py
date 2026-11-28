@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from pointmass_rl.env import Config,World
-from pointmass_rl.strike_ppo import DecisionSchedule,_model_critic_state,save_checkpoint,model_from_checkpoint
+from pointmass_rl.final_mission_ppo import DecisionSchedule,_model_critic_state,save_checkpoint,model_from_checkpoint
 from pointmass_rl.temporal_critic import TemporalActorCritic,TemporalGraphQBody,trajectory_labels
 
 class TemporalCriticTests(unittest.TestCase):
@@ -22,17 +22,17 @@ class TemporalCriticTests(unittest.TestCase):
   torch.testing.assert_close(first,torch.stack(f,-1),rtol=1e-12,atol=1e-12);torch.testing.assert_close(second,torch.stack(g,-1),rtol=1e-12,atol=1e-12)
   self.assertTrue(torch.all(second.cumsum(-1)<=first.cumsum(-1)+1e-12))
  def test_episode_reset_and_cutoff_are_censored(self):
-  damage=np.array([[[1,0]],[[0,1]],[[0,0]],[[1,1]]]);done=np.array([[0],[1],[0],[0]],bool)
-  r=trajectory_labels(damage,done,6)
+  progress=np.array([[[1,0]],[[0,1]],[[0,0]],[[1,1]]]);done=np.array([[0],[1],[0],[0]],bool)
+  r=trajectory_labels(progress,done,6)
   np.testing.assert_array_equal(r['temporal_observed'][0],[1,1,0,0,0,0]);np.testing.assert_array_equal(r['temporal_observed'][2],[1,1,0,0,0,0])
   np.testing.assert_array_equal(r['temporal_previous'][0,:,1],[1,0]);np.testing.assert_array_equal(r['temporal_next'][2,:,1],[1,1])
  def test_value_limits_and_event_loss_gradient(self):
-  c,m,s,a=self.sample();log0,l11,l12,life,raw=m.q_body.event_logs(s,a);f,g=m.q_body.event_masses(log0,l11,l12)
-  self.assertTrue(torch.all(g[life<2]==0));self.assertTrue(torch.all(f.sum(-1)<=1+1e-5));self.assertTrue(torch.all(g.sum(-1)<=1+1e-5))
-  maximum=(life*(raw[...,2:5]*torch.tensor([2.5,2.,1.])).sum(-1)).sum(-1)
+  c,m,s,a=self.sample();log0,l11,l12,work_units,raw=m.q_body.event_logs(s,a);f,g=m.q_body.event_masses(log0,l11,l12)
+  self.assertTrue(torch.all(g[work_units<2]==0));self.assertTrue(torch.all(f.sum(-1)<=1+1e-5));self.assertTrue(torch.all(g.sum(-1)<=1+1e-5))
+  maximum=(work_units*(raw[...,2:5]*torch.tensor([2.5,2.,1.])).sum(-1)).sum(-1)
   q=m.joint_q(s,a);self.assertTrue(torch.all(q>=0));self.assertTrue(torch.all(q<=maximum+1e-4))
   zero=s.clone();zero[:,0]=0;self.assertEqual(float(m.joint_q(zero,a).detach()),0.)
-  dead=s.clone();dead[:,3:1+4*3:4]=0;self.assertEqual(float(m.joint_q(dead,a).detach()),0.)
+  inactive=s.clone();inactive[:,3:1+4*3:4]=0;self.assertEqual(float(m.joint_q(inactive,a).detach()),0.)
   prev=torch.zeros(1,3,12,dtype=torch.long);nxt=prev.clone();nxt[:,:,2:]=1;prev[:,:,3:]=1;observed=torch.ones(1,12,dtype=torch.bool)
   loss=m.q_body.completion_loss(s,a,prev,nxt,observed);loss.backward()
   self.assertTrue(torch.isfinite(loss));self.assertTrue(all(p.grad is None or torch.isfinite(p.grad).all() for p in m.q_body.parameters()))

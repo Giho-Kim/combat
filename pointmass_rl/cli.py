@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from tqdm.auto import tqdm
 from .env import (Config, EVALUATION_TASKS, SUCCESS_THRESHOLDS, World,
-                  evaluation_task_for_episode, split_strike_action,
+                  evaluation_task_for_episode, split_final_mission_action,
                   target_remaining_value)
 from .policies import (ApproximateDPPolicy, HeuristicPolicy, NearestTargetPolicy,
                        RandomPolicy, TargetAllocationPolicy, TypePriorityPolicy)
@@ -28,14 +28,14 @@ def rollout(config, policy, seed, record=False, success_threshold=None,
         action=(policy.predict(obs,world) if isinstance(policy,TargetAllocationPolicy)
                 else policy.predict(obs))
         if record:
-            targets=split_strike_action(action)
+            targets=split_final_mission_action(action)
             targets=world.committed_targets(targets)
             goals=world.resolve_setpoints(targets)
             for i,(target,goal) in enumerate(zip(targets,goals)):
                 decisions.append(dict(step=world.t,drone=i,target_id=int(target),
-                    target_type=int(world.mem_type[i,target]),target_life=int(world.mem_life[i,target]),
+                    target_type=int(world.mem_type[i,target]),target_work_units=int(world.mem_work_units[i,target]),
                     target_score=target_remaining_value(
-                        world.mem_type[i,target], world.mem_life[i,target]),
+                        world.mem_type[i,target], world.mem_work_units[i,target]),
                     estimated_distance=float(np.linalg.norm(goal-world.perceived_pos[i])),
                     goal_x=float(goal[0]),goal_y=float(goal[1]),active=bool(world.agent_active[i])))
         obs,_,_,_,_=world.step(action)
@@ -74,6 +74,10 @@ def command_config(args):
         if config.mode != 'belief':
             raise ValueError('--lawnmower/--no-lawnmower requires --mode belief')
         config = replace(config, belief_lawnmower=lawnmower)
+    if getattr(args, 'exploration_every_step', False):
+        if not getattr(args, 'exploration_ppo', False):
+            raise ValueError('--exploration-every-step requires --exploration-ppo')
+        config = replace(config, exploration_every_step=True)
     return config
 
 
@@ -101,7 +105,7 @@ def train(args):
         return
     try:
         import torch
-        from .strike_ppo import train_target_allocation,save_checkpoint,checkpoint_payload
+        from .final_mission_ppo import train_target_allocation,save_checkpoint,checkpoint_payload
     except ImportError as e: raise SystemExit(str(e)) from e
     out=Path(args.out);out.mkdir(parents=True,exist_ok=True)
     start_transitions=0; previous_best_key=None; old_episodes=[]; old_evaluations=[]
@@ -165,7 +169,7 @@ def train(args):
                   config=asdict(c),python=platform.python_version(),numpy=str(np.__version__),torch=str(torch.__version__),
                   algorithm='Target Allocation',
                   training_settings=model.training_settings)
-    model_path = out / f'strike_{args.algorithm}.pt'
+    model_path = out / f'final_mission_{args.algorithm}.pt'
     save_checkpoint(model_path,model,metadata);write_csv(out/'training_episodes.csv',old_episodes+episodes)
     save_checkpoint(out/'latest.pt',model,metadata)
     if not evaluations and not args.continue_run:
@@ -199,7 +203,7 @@ def evaluate(args):
     learned_name = learned.model.algorithm if learned else None
     learned_policies = ({f'{learned_name}_no_resolver': TargetAllocationPolicy(args.model, c, resolver=False, device=args.device),
                          f'{learned_name}_resolver': learned} if learned else {})
-    names=['nearest','type_priority','approximate_dp']+list(learned_policies);rows=[];runs={};summaries={};task_success={};task_damage={};task_return={};task_discounted_return={};decisions=[]
+    names=['nearest','type_priority','approximate_dp']+list(learned_policies);rows=[];runs={};summaries={};task_success={};task_scores={};task_return={};task_discounted_return={};decisions=[]
     record_episode = args.episodes - 1
     progress=tqdm(total=len(names)*args.episodes,desc='Evaluate',unit='episode',dynamic_ncols=True)
     for name in names:
@@ -225,7 +229,7 @@ def evaluate(args):
             [row['mission_success'] for row in local if row['evaluation_task']==task])),
             'n':sum(row['evaluation_task']==task for row in local)}
             for task in EVALUATION_TASKS} if task_suite else {}
-        task_damage[name]={task:{'mean':float(np.mean(
+        task_scores[name]={task:{'mean':float(np.mean(
             [row['score'] for row in local if row['evaluation_task']==task])),
             'n':sum(row['evaluation_task']==task for row in local)}
             for task in EVALUATION_TASKS} if task_suite else {}
@@ -250,7 +254,7 @@ def evaluate(args):
         episodes=args.episodes,
         replay_episode=record_episode, replay_seed=args.seed+record_episode,
         summary=summaries,task_success=task_success,
-        task_damage=task_damage,task_return=task_return,
+        task_completion_score=task_scores,task_return=task_return,
         task_discounted_return=task_discounted_return),indent=2)+'\n')
     write_csv(out/'episodes.csv',rows);write_csv(out/'decisions.csv',decisions);replay(out/'replay.html',c,runs);plot(out/'comparison.png',summaries)
 
@@ -272,6 +276,10 @@ def main():
         help='COMA actor signal: estimated Q or observed return minus counterfactual baseline')
     s.choices['train'].add_argument('--exploration-ppo', action='store_true',
         help='Exploration only: complete polygon-decision rollouts and PPO with Monte Carlo return minus V; --rollout-steps counts decision samples')
+    s.choices['train'].add_argument('--exploration-every-step', action='store_true',
+        help='Exploration PPO: choose a region and collect a training sample every physics step')
+    s.choices['train'].add_argument('--exploration-checkpoint-interval', type=int, default=500000,
+        help='Exploration PPO numbered checkpoint interval in agent transitions (default: 500000)')
     s.choices['train'].add_argument('--eval-workers', type=int, default=4,
         help='Exploration PPO evaluation processes across resolver/episode pairs; 1 runs serially (default: 4)')
     s.choices['train'].add_argument('--eval-screen-episodes', type=int, default=0,
@@ -292,14 +300,14 @@ def main():
     s.choices['train'].add_argument('--continue-run', action='store_true', help='Continue from latest checkpoint in output directory, retaining histories')
     s.choices['train'].add_argument('--initial-checkpoint', default=None,
         help='Initialize model weights from a checkpoint; optimizer and training state are reset')
-    s.choices['train'].add_argument('--best-metric', choices=('case1', 'suite_damage'), default='case1')
+    s.choices['train'].add_argument('--best-metric', choices=('case1', 'suite_completion_score'), default='case1')
     model_credit=s.choices['train'].add_mutually_exclusive_group()
     model_credit.add_argument('--lookahead-credit', type=float, default=0.,
-        help='COMA auxiliary assignment-damage credit weight; model-assisted training only, no planner at evaluation')
+        help='COMA auxiliary assignment progress credit weight; model-assisted training only, no planner at evaluation')
     model_credit.add_argument('--model-based-advantage', action='store_true',
         help='Enable model-assisted counterfactual actor credit with weight 1.0 (training only)')
     s.choices['train'].add_argument('--deadline-mask', action='store_true',
-        help='Mask stationary targets that cannot be struck before horizon; saved in checkpoint and also used at evaluation')
+        help='Mask stationary targets that cannot be reached for processing before the horizon; saved in checkpoint and also used at evaluation')
     s.choices['train'].add_argument('--eval-deadline-mask', action='store_true',
         help='Apply the time-limit mask only in the resolver evaluation during training; rollouts stay unmasked')
     s.choices['train'].add_argument('--policy-clip', type=float, default=.2)
@@ -307,7 +315,7 @@ def main():
     s.choices['train'].add_argument('--guided-training', action='store_true',
         help='Train with value/deadline-aware potential shaping and a .02 reassignment cost; no pretraining')
     s.choices['train'].add_argument('--actor-samples', choices=('all', 'events'), default='all',
-        help='Actor loss samples: every decision, or start/pre-strike-completion/final transitions; decisions and GAE stay per-step')
+        help='Actor loss samples: every decision, or start/pre-final_mission-completion/final transitions; decisions and GAE stay per-step')
     s.choices['train'].add_argument('--epochs', type=int, default=10,
         help='PPO epochs per collected batch (default: 10)')
     for command in ('train', 'evaluate'):
@@ -316,7 +324,7 @@ def main():
         s.choices[command].add_argument('--mode', choices=('known', 'belief'), default=None,
             help='known: historical fully observed task; belief: sensor-driven multi-object belief task')
         s.choices[command].add_argument('--commit-target', action='store_true',
-            help='Keep the selected target until strike completion or invalidation, protecting approach assignments')
+            help='Keep the selected target until final_mission completion or invalidation, protecting approach assignments')
         s.choices[command].add_argument('--sticky-assignment', action='store_true',
             help='Prefer existing approach assignments over newcomers when resolving target conflicts')
         s.choices[command].add_argument('--decision-interval', type=int, default=None,

@@ -151,7 +151,7 @@ def choose_action(model, obs, deterministic=False, resolver='none', candidate_ma
     if resolver != 'none':
         rejected = torch.zeros_like(masks)
         # Each search component has one destination, so assign one drone to it.
-        # Identified objects retain one strike slot per remaining life.
+        # Identified objects retain one final_mission slot per remaining work_units.
         for _ in range(masks.shape[0]*masks.shape[1]+1):
             changed = False
             for j in range(masks.shape[1]):

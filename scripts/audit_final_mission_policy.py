@@ -8,7 +8,7 @@ import torch
 
 from pointmass_rl.env import Config, World, evaluation_task_for_episode
 from pointmass_rl.policies import TypePriorityPolicy
-from pointmass_rl.strike_ppo import (
+from pointmass_rl.final_mission_ppo import (
     DecisionSchedule, _model_observation, model_from_checkpoint,
 )
 
@@ -27,8 +27,8 @@ def rollout(model, config, seed, task, mode, sampling_seed=0, trace=False):
     frames = []
     while not world.done:
         active = world.agent_active.copy()
-        participants = world.strike_participants.copy()
-        life = world.target_life.copy()
+        participants = world.final_mission_participants.copy()
+        work_units = world.target_work_units.copy()
         if mode == 'type_priority':
             action = baseline.predict(obs)
             decision = active & (world.locked_targets() < 0)
@@ -49,11 +49,11 @@ def rollout(model, config, seed, task, mode, sampling_seed=0, trace=False):
             frames.append(dict(state=world.snapshot(), targets=targets.tolist(),
                                decision=decision.tolist(), probabilities=probabilities))
         obs, _, _, _, _ = world.step(action)
-        started = np.argwhere(world.strike_participants & ~participants).tolist()
-        expended = np.flatnonzero(active & ~world.agent_active).tolist()
-        if started or expended or np.any(life != world.target_life):
+        started = np.argwhere(world.final_mission_participants & ~participants).tolist()
+        completed_agents = np.flatnonzero(active & ~world.agent_active).tolist()
+        if started or completed_agents or np.any(work_units != world.target_work_units):
             events.append(dict(step=world.t, started_target_agent=started,
-                               expended_agents=expended, life=world.target_life.tolist(),
+                               expended_agents=completed_agents, work_units=world.target_work_units.tolist(),
                                score=world.score))
         previous = targets.copy()
     return dict(seed=seed, task=task, mode=mode, sampling_seed=sampling_seed,

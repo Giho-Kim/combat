@@ -124,9 +124,9 @@ def plot_evaluation(run_dir):
                        linewidth=1.7, label="Lookahead")
         ax.set_title(title, loc="left", pad=10)
         ax.set_xlabel("Agent transitions")
-        style_axis(ax, key in {"mission_success", "destroyed_fraction"})
+        style_axis(ax, key in {"mission_success", "completion_fraction"})
         endpoint(ax, x, y)
-        if key in {"mission_success", "destroyed_fraction", "score_auc"}:
+        if key in {"mission_success", "completion_fraction", "score_auc"}:
             ax.set_ylim(-.03, 1.05)
     b_ax = axes[-1]
     task_keys = [key for key in allocation[0] if key.startswith("success_type1_")]

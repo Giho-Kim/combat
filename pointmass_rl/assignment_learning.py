@@ -6,10 +6,10 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from .env import Config,World,strike_action
+from .env import Config,World,final_mission_action
 from .graph_critic import GraphQBody
-from .strike_target_actor import TargetAllocationActorCritic
-from .strike_ppo import (DecisionSchedule,_model_observation,_model_critic_state,
+from .final_mission_target_actor import TargetAllocationActorCritic
+from .final_mission_ppo import (DecisionSchedule,_model_observation,_model_critic_state,
                          resolve_device,model_tensor,save_checkpoint,evaluate_model)
 
 @torch.no_grad()
@@ -34,7 +34,7 @@ def sequential_actions(model,worlds,schedules,deterministic=True):
                 s.targets[i]=actions[j,i];s.previous_action_probabilities[i]=probabilities[j,i]
     for j,(w,s) in enumerate(zip(worlds,schedules)):
         s.record(w,actions[j],decisions[j]&w.agent_active,probabilities[j])
-    return strike_action(actions),[dict(obs=observations,target=actions,logp=logps,
+    return final_mission_action(actions),[dict(obs=observations,target=actions,logp=logps,
         probs=probabilities,action_mask=masks,decision=decisions)]
 
 @torch.no_grad()
@@ -186,7 +186,7 @@ def main():
         counts.append((int(w.agent_active.sum()),int(w.target_exists.sum())))
         before=float(w.score)
         # Keep this actual assignment for the episode, including after a target vanishes.
-        while not w.done:w.step(strike_action(joint))
+        while not w.done:w.step(final_mission_action(joint))
         returns.append(float(w.score)-before)
         if (ep+1)%100==0:print(f'Collected {ep+1}/{a.episodes} episodes',flush=True)
     np.savez_compressed(out/'experience.npz',states=states,actions=actions,returns=returns,

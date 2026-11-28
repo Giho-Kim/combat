@@ -1,4 +1,4 @@
-"""Combine the three saved actor input-intervention comparisons."""
+"""Plot saved actor input interventions for drone rescue-site allocation."""
 import json
 from pathlib import Path
 import sys
@@ -12,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.dissect_actor_attention import scores, probabilities
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import model_from_checkpoint
+from pointmass_rl.final_mission_ppo import model_from_checkpoint
 out=ROOT/'runs/target_allocation_attention_anatomy'
 run=ROOT/'runs/target_allocation_variable_aligned_basic_warmstart'
 torch.set_num_threads(1)

@@ -1,6 +1,6 @@
 """Optional model-assisted policy credit, not an execution-time planner.
 
-Score the actor's sampled joint actions by the damage obtainable if those
+Score the actor's sampled joint actions by the progress value obtainable if those
 assignments are continued. Counterfactual scores hold teammates' actions fixed.
 This is auxiliary, biased guidance: it is NOT the learned COMA Q or a claim that
 the policy will actually keep its current assignments. Evaluation never uses it.
@@ -9,14 +9,14 @@ import numpy as np
 
 
 def completion_steps(world):
-    """Exact earliest strike completion for stationary point-mass targets."""
+    """Exact earliest final_mission completion for stationary point-mass targets."""
     distance = np.linalg.norm(world.pos[:, None] - world.targets[None], axis=-1)
-    travel = np.maximum(distance - world.c.strike_range, 0) / (
-        world.c.strike_speed * world.c.dt)
-    eta = np.maximum(1., np.ceil(travel - 1e-9)) + world.c.strike_steps_per_life - 1
+    travel = np.maximum(distance - world.c.final_mission_range, 0) / (
+        world.c.final_mission_speed * world.c.dt)
+    eta = np.maximum(1., np.ceil(travel - 1e-9)) + world.c.service_steps_per_unit - 1
     for agent, target in enumerate(world.locked_targets()):
         if target >= 0:
-            eta[agent, target] = world.c.strike_steps_per_life - world.agent_strike_progress[agent]
+            eta[agent, target] = world.c.service_steps_per_unit - world.agent_final_mission_progress[agent]
     return np.nan_to_num(eta, nan=np.inf)
 
 
@@ -35,31 +35,31 @@ def deadline_action_mask(world, available):
 
 
 def assignment_values(world, assignments):
-    """Smooth deadline-aware damage forecast for a batch of joint assignments."""
+    """Smooth deadline-aware progress forecast for a batch of joint assignments."""
     assignments = np.asarray(assignments, dtype=int)
     distance = np.linalg.norm(world.pos[:, None] - world.targets[None], axis=-1)
-    travel = np.maximum(distance - world.c.strike_range, 0) / (
-        world.c.strike_speed * world.c.dt)
-    eta = np.maximum(1., travel) + world.c.strike_steps_per_life - 1
+    travel = np.maximum(distance - world.c.final_mission_range, 0) / (
+        world.c.final_mission_speed * world.c.dt)
+    eta = np.maximum(1., travel) + world.c.service_steps_per_unit - 1
     for agent, target in enumerate(world.locked_targets()):
         if target >= 0:
-            eta[agent, target] = world.c.strike_steps_per_life - world.agent_strike_progress[agent]
+            eta[agent, target] = world.c.service_steps_per_unit - world.agent_final_mission_progress[agent]
     eta = np.nan_to_num(eta, nan=1e6)
     remaining = world.c.horizon - world.t
     # Smoothness provides credit near deadlines; a small time preference breaks
-    # equal-damage ties. Neither term changes the environment's reward or D.
+    # equal-score ties. Neither term changes the environment's reward or D.
     feasibility = 1 / (1 + np.exp(np.clip((eta - remaining) / 2., -60, 60)))
     feasibility *= np.exp(-.03 * eta / world.c.horizon)
     result = np.zeros(assignments.shape[:-1], dtype=np.float32)
-    for target in np.flatnonzero(world.target_exists & ~world.destroyed):
-        capacity = min(int(world.target_life[target]), 2 if world.target_type[target] == 1 else 1)
+    for target in np.flatnonzero(world.target_exists & ~world.target_completed):
+        capacity = min(int(world.target_work_units[target]), 2 if world.target_type[target] == 1 else 1)
         if capacity <= 0:
             continue
         assigned = (assignments == target) & world.agent_active
         contribution = assigned * feasibility[:, target]
         best = np.sort(contribution, axis=-1)[..., -capacity:]
-        per_life = {1: 2.5, 2: 2., 3: 1.}[int(world.target_type[target])]
-        result += per_life * best.sum(axis=-1)
+        per_work_units = {1: 2.5, 2: 2., 3: 1.}[int(world.target_type[target])]
+        result += per_work_units * best.sum(axis=-1)
     return result
 
 

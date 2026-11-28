@@ -1,4 +1,4 @@
-"""Playable polygon search and target-consumption demo using real game rules."""
+"""Playable polygon search and service demo using the simulation rules."""
 from pathlib import Path
 import sys, json, time, argparse
 import numpy as np
@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.demo_belief_polygons import generate, contains, vertices, lanes, route, density
 import scripts.demo_belief_polygons as planner
-from pointmass_rl.env import Config, DAMAGE_REWARD_RATE
+from pointmass_rl.env import Config, PROGRESS_REWARD_RATE
 from pointmass_rl.belief_env import BeliefWorld
 from pointmass_rl.navigation import DubinsPath, point_path
 
@@ -64,7 +64,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--seed',type=int,default=7)
     args=parser.parse_args();OUT.mkdir(parents=True,exist_ok=True)
     config=Config.load(ROOT/'configs/belief.json');world=BeliefWorld(config);world.reset(args.seed)
-    planner.SPEED=config.strike_speed/10
+    planner.SPEED=config.final_mission_speed/10
     planner.RADIUS=config.belief_turn_radius/10
     w=world._world;b=world.belief
     scout = w.n-1
@@ -75,7 +75,7 @@ def main():
         destination=track['mean']*config.size
         nav[i]=dict(kind='target',handle=track['handle'],goal=destination.copy(),
                     paths=[point_path(w.pos[i],w.heading[i],destination,config.belief_turn_radius)])
-        event('select',f'D{i}: Type {track["type"]} 표적 선택',drone=i,position=destination.tolist())
+        event('select',f'D{i}: Type {track["type"]} 작업 지점 선택',drone=i,position=destination.tolist())
     def set_patrol():
         waypoints = patrol_waypoints(w.pos[scout], config)
         pos, heading = w.pos[scout].copy(), w.heading[scout]
@@ -95,8 +95,8 @@ def main():
                 for goal,angle in lanes(p['params'],reverse,flip):
                     dest=goal*10;path=DubinsPath(pos,h,dest,angle,config.belief_turn_radius)
                     paths.append(path);pos,h=dest,angle
-                total=sum(path.length for path in paths)/config.strike_speed
-                sweep=sum(path.length for path in paths[1:])/config.strike_speed
+                total=sum(path.length for path in paths)/config.final_mission_speed
+                sweep=sum(path.length for path in paths[1:])/config.final_mission_speed
                 if sweep<=planner.BUDGET:
                     options.append((total,sweep,paths))
         if not options:
@@ -123,11 +123,11 @@ def main():
         plans.append(dict(step=int(w.t),generation_ms=ms,polygons=[dict(id=p['id'],vertices=vertices(p['params']).tolist(),
             mass=float(mass[contains(p['params'],points)].sum()),locked=p['id'] in locked) for p in proposals]))
     def assign():
-        # Public tracks only. Consume capacity is the track's observed life.
+        # Public tracks only. Available slots are limited by the observed remaining work.
         for track in b.tracks:
-            if track['life']<=0:continue
+            if track['work_units']<=0:continue
             existing=[i for i,n in enumerate(nav) if w.agent_active[i] and n and n['kind']=='target' and n['handle']==track['handle']]
-            slots=max(0,track['life']-len(existing))
+            slots=max(0,track['work_units']-len(existing))
             available=[i for i in range(w.n) if i!=scout and w.agent_active[i] and (nav[i] is None or nav[i]['kind']=='search')]
             available.sort(key=lambda i:np.linalg.norm(w.pos[i]-track['mean']*config.size))
             for i in available[:slots]:set_target(i,track)
@@ -153,12 +153,12 @@ def main():
             images[key]=np.rint(np.sqrt(np.clip(value/cap,0,1))*255).astype(np.uint8).tobytes().hex()
         frames.append(dict(step=int(w.t),pos=(w.pos/10).tolist(),heading=w.heading.tolist(),active=w.agent_active.tolist(),
             tasks=[('대기' if n is None else '전역 탐색 전용' if n['kind']=='patrol' else 'P'+str(n['polygon'])+' 탐색' if n['kind']=='search' else
-                    '표적 처리 중' if w.strike_participants[:,i].any() else '표적 이동') for i,n in enumerate(nav)],
+                    '작업 지점 처리 중' if w.final_mission_participants[:,i].any() else '작업 지점 이동') for i,n in enumerate(nav)],
             goals=[None if n is None else (n['goal']/10).tolist() for n in nav],
             search_ids=[n['polygon'] if n and n['kind']=='search' else None for n in nav],
-            progress=w.agent_strike_progress.tolist(),heat=images,maximum=maximum,plan=len(plans)-1,
-            tracks=[dict(position=(t['mean']*10).tolist(),type=t['type'],life=t['life']) for t in b.tracks],
-            truth=[dict(position=(w.targets[j]/10).tolist(),type=int(w.target_type[j]),life=int(w.target_life[j]),
+            progress=w.agent_final_mission_progress.tolist(),heat=images,maximum=maximum,plan=len(plans)-1,
+            tracks=[dict(position=(t['mean']*10).tolist(),type=t['type'],work_units=t['work_units']) for t in b.tracks],
+            truth=[dict(position=(w.targets[j]/10).tolist(),type=int(w.target_type[j]),work_units=int(w.target_work_units[j]),
                         formation=int(w.target_formation[j])+1) for j in np.flatnonzero(w.target_exists)],
             reported_remaining=float(b.remaining_types.sum()),background=b.background_mass,score=float(w.score)))
     begin=time.perf_counter();set_patrol();replan();assign();record()
@@ -167,8 +167,8 @@ def main():
         for i,n in enumerate(nav):
             if not w.agent_active[i] or n is None:continue
             if n['kind']=='target':raw[i]=n['handle']
-            if w.strike_participants[:,i].any():continue
-            budget=config.strike_speed*config.dt
+            if w.final_mission_participants[:,i].any():continue
+            budget=config.final_mission_speed*config.dt
             while budget>1e-9 and n['paths']:
                 w.pos[i],w.heading[i],budget=n['paths'][0].move(w.pos[i],w.heading[i],budget)
                 if n['paths'][0].done:
@@ -180,32 +180,32 @@ def main():
             if not n['paths'] and n['kind']=='search':
                 event('sweep_end',f'D{i}: P{n["polygon"]} 탐색 완료',drone=i)
                 nav[i]=None;sweep_finished=True
-        w.vel=(w.pos-old)/config.dt;w.t+=1;w.last_damage_by_agent.fill(0)
-        w._resolve_strikes(raw)
-        reward=float(DAMAGE_REWARD_RATE*w.last_damage_by_agent.sum());w.rewards_total+=reward
+        w.vel=(w.pos-old)/config.dt;w.t+=1;w.last_progress_value_by_agent.fill(0)
+        w._resolve_final_missions(raw)
+        reward=float(PROGRESS_REWARD_RATE*w.last_progress_value_by_agent.sum());w.rewards_total+=reward
         w.discounted_rewards_total+=config.discount_gamma**(w.t-1)*reward
-        consumed=np.flatnonzero(before & ~w.agent_active)
-        for i in consumed:
+        completed_agents=np.flatnonzero(before & ~w.agent_active)
+        for i in completed_agents:
             handle=raw[i]
             for track in b.tracks:
-                if track['handle']==handle:track.update(life=int(w.target_life[handle]),seen=w.t)
-            event('consume',f'D{i} consume · 표적 남은 life {int(w.target_life[handle])}',drone=int(i),position=w.pos[i].tolist())
+                if track['handle']==handle:track.update(work_units=int(w.target_work_units[handle]),seen=w.t)
+            event('service_end',f'D{i} 작업 종료 · 작업 지점 남은 작업량 {int(w.target_work_units[handle])}',drone=int(i),position=w.pos[i].tolist())
             nav[i]=None
         world._sense()
         discovered=False
         for track in b.tracks:
             if track['handle'] not in known:
                 known.add(track['handle']);discovered=True
-                event('discover',f'Type {track["type"]} 발견 · life {track["life"]}',position=(track['mean']*config.size).tolist())
+                event('discover',f'Type {track["type"]} 발견 · 남은 작업량 {track["work_units"]}',position=(track['mean']*config.size).tolist())
         if not w.agent_active.any():record();break
         if sweep_finished or w.t-last_plan>=60 or (not proposals):replan()
         assign()
-        if w.t%3==0 or discovered or len(consumed):record()
+        if w.t%3==0 or discovered or len(completed_agents):record()
     if frames[-1]['step']!=w.t:record()
     payload=dict(seed=args.seed,scout=scout,frames=frames,plans=plans,events=events,size=10,heat_side=32,
-        sensor_range=config.sensor_range/10,sensor_fov=config.sensor_fov_deg,service_steps=config.strike_steps_per_life,
-        report=w.initial_intel,summary=dict(steps=int(w.t),discovered=len(known),consumed=int((~w.agent_active).sum()),
-            completed=int(w.destroyed[w.target_exists].sum()),score=float(w.score),seconds=time.perf_counter()-begin,
+        sensor_range=config.sensor_range/10,sensor_fov=config.sensor_fov_deg,service_steps=config.service_steps_per_unit,
+        report=w.initial_report,summary=dict(steps=int(w.t),discovered=len(known),retired_agents=int((~w.agent_active).sum()),
+            completed=int(w.target_completed[w.target_exists].sum()),score=float(w.score),seconds=time.perf_counter()-begin,
             mean_generation_ms=float(np.mean(generation_times))))
     (OUT/'mission.json').write_text(json.dumps(payload,ensure_ascii=False))
     (OUT/'demo.html').write_text(HTML.replace('__DATA__',json.dumps(payload,ensure_ascii=False)))
@@ -213,12 +213,12 @@ def main():
     print(OUT/'demo.html',flush=True)
 
 
-HTML=r'''<!doctype html><meta charset="utf-8"><title>Polygon 탐색 · 표적 선택 · Consume</title>
+HTML=r'''<!doctype html><meta charset="utf-8"><title>Polygon 탐색 · 작업 지점 선택 · 작업 종료</title>
 <style>body{background:#101722;color:#e6edf7;font:15px system-ui;max-width:1280px;margin:22px auto;padding:0 18px}h1{font-size:25px}p{color:#b1c1d7;line-height:1.5}.layout{display:grid;grid-template-columns:minmax(500px,850px) 320px;gap:18px}canvas{width:100%;background:#101c2b;border-radius:10px}.controls{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:18px 0}button,select{color:white;background:#263b54;padding:9px;border:1px solid #55728e;border-radius:6px}input[type=range]{width:320px}.card{background:#1a2b40;padding:16px;border-radius:10px;margin-bottom:12px}#events{max-height:450px;overflow:auto}.event{padding:9px;border-bottom:1px solid #35465b;cursor:pointer}.event:hover{background:#314660}.small{font-size:12px;color:#adbed5}.legend{height:15px;background:linear-gradient(90deg,#101c2b,#116a8c,#24ccae,#efe942,#ff5a28);border-radius:4px}b{color:#fff}@media(max-width:900px){.layout{grid-template-columns:1fr}}</style>
-<h1>탐색 → 발견 → 표적 선택 → Consume</h1><p>D4는 전역 탐색 전용입니다. 발견해도 탐색을 계속하고 정보를 공유합니다. D0–D3가 표적을 선택·처리합니다. 탐색 줄 간격은 100m입니다. 실제 위치 표시는 의사결정 입력과 별도로 켜고 끌 수 있습니다.</p>
+<h1>탐색 → 발견 → 작업 지점 선택 → 작업 종료</h1><p>D4는 전역 탐색 전용입니다. 발견해도 탐색을 계속하고 정보를 공유합니다. D0–D3가 작업 지점을 선택·처리합니다. 탐색 줄 간격은 100m입니다. 실제 위치 표시는 의사결정 입력과 별도로 켜고 끌 수 있습니다.</p>
 <div class="controls"><button id="play">재생</button><select id="speed"><option value="1">3초씩</option><option value="5" selected>15초씩</option><option value="10">30초씩</option></select><input id="time" type="range" min="0" value="0"><b id="clock"></b></div>
-<div class="controls"><select id="layer"><option value="total">전체 belief</option><option value="reported">보고 표적 belief</option><option value="background">배경 belief</option></select><label><input id="truth" type="checkbox" checked>실제 표적 위치</label><label><input id="poly" type="checkbox" checked>탐색 polygon</label><label><input id="sensor" type="checkbox" checked>센서 시야</label><label><input id="trail" type="checkbox" checked>이동 궤적</label></div>
-<div class="layout"><canvas id="map" width="850" height="850"></canvas><aside><div class="card"><b>Belief 밀도 · 밝고 붉을수록 높음</b><div class="legend"></div><div id="scale" class="small"></div><p class="small">처음부터 끝까지 같은 색상 기준입니다. 붉은색은 범례 상한 이상의 밀도입니다.</p></div><div class="card" id="status"></div><div class="card"><b>이벤트 · 클릭하면 해당 시점으로</b><div id="events"></div></div><p class="small">실제 표적: 분홍 점선 원<br>발견된 표적: 노란 원<br>처리 완료 표적: ×<br>consume된 드론: 회색 ×<br>숫자는 타입·남은 life입니다.</p></aside></div>
+<div class="controls"><select id="layer"><option value="total">전체 belief</option><option value="reported">보고 작업 지점 belief</option><option value="background">배경 belief</option></select><label><input id="truth" type="checkbox" checked>실제 작업 지점 위치</label><label><input id="poly" type="checkbox" checked>탐색 polygon</label><label><input id="sensor" type="checkbox" checked>센서 시야</label><label><input id="trail" type="checkbox" checked>이동 궤적</label></div>
+<div class="layout"><canvas id="map" width="850" height="850"></canvas><aside><div class="card"><b>Belief 밀도 · 밝고 붉을수록 높음</b><div class="legend"></div><div id="scale" class="small"></div><p class="small">처음부터 끝까지 같은 색상 기준입니다. 붉은색은 범례 상한 이상의 밀도입니다.</p></div><div class="card" id="status"></div><div class="card"><b>이벤트 · 클릭하면 해당 시점으로</b><div id="events"></div></div><p class="small">실제 작업 지점: 분홍 점선 원<br>발견된 작업 지점: 노란 원<br>처리 완료 작업 지점: ×<br>작업을 마친 드론: 회색 ×<br>숫자는 타입·남은 작업량입니다.</p></aside></div>
 <script>
 const data=__DATA__,canvas=document.querySelector('#map'),ctx=canvas.getContext('2d'),slider=document.querySelector('#time'),colors=['#65e4ff','#c19bff','#a8e465','#ffa470','#ff91c4'];let timer;let placed=[];
 slider.max=data.frames.length-1;const xy=p=>[40+p[0]*77,810-p[1]*77];const stops=[[16,28,43],[17,106,140],[36,204,174],[239,233,66],[255,90,40]];
@@ -227,10 +227,10 @@ function cross(p,color,r=7){let[x,y]=xy(p);ctx.strokeStyle=color;ctx.lineWidth=3
 function label(text,x,y,color){const width=ctx.measureText(text).width+8;let lx=Math.min(810-width,x+10),ly=y-9;for(let k=0;k<30;k++){if(!placed.some(r=>lx<r[0]+r[2]&&lx+width>r[0]&&ly-14<r[1]+18&&ly+4>r[1]))break;ly+=20}placed.push([lx,ly-14,width]);ctx.fillStyle='rgba(12,22,36,.82)';ctx.fillRect(lx-3,ly-14,width,19);ctx.fillStyle=color;ctx.fillText(text,lx,ly);if(Math.abs(ly-y)>25){ctx.strokeStyle=color;ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(lx,ly-7);ctx.stroke()}}
 function draw(){placed=[];let ix=+slider.value,f=data.frames[ix],layer=document.querySelector('#layer').value;ctx.clearRect(0,0,850,850);let h=f.heat[layer],n=data.heat_side;const surface=document.createElement('canvas');surface.width=n;surface.height=n;const sc=surface.getContext('2d');for(let j=0;j<n;j++)for(let i=0;i<n;i++){let v=parseInt(h.slice(2*(j*n+i),2*(j*n+i)+2),16)/255;sc.fillStyle=color(v);sc.fillRect(i,n-1-j,1,1)}ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(surface,117,117,616,616);ctx.strokeStyle='#6f849e';ctx.lineWidth=1;ctx.strokeRect(40,40,770,770);ctx.fillStyle='#c3d2e5';ctx.font='12px system-ui';for(let k=0;k<=10;k++){ctx.fillText(k,35+k*77,833);ctx.fillText(k,18,815-k*77)}
 if(document.querySelector('#poly').checked&&f.plan>=0){data.plans[f.plan].polygons.forEach(p=>{ctx.beginPath();p.vertices.forEach((v,j)=>j?ctx.lineTo(...xy(v)):ctx.moveTo(...xy(v)));ctx.closePath();let assigned=(f.search_ids||[]).indexOf(p.id);ctx.strokeStyle=assigned>=0?colors[assigned%5]:'#b9d6f160';ctx.lineWidth=assigned>=0?2.5:1;ctx.stroke();let m=p.vertices.reduce((a,v)=>[a[0]+v[0]/4,a[1]+v[1]/4],[0,0]);})}
-if(document.querySelector('#truth').checked){f.truth.forEach(t=>{if(t.life<=0){cross(t.position,'#ff87b4');return}let[x,y]=xy(t.position);ctx.setLineDash([4,3]);ctx.strokeStyle='#ff75b0';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(x,y,11,0,2*Math.PI);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#ffb3d0';ctx.font='bold 13px system-ui';label('Type '+t.type+' · L'+t.life,x,y,'#ffb3d0')})}
-f.tracks.forEach(t=>{if(t.life<=0)return;let[x,y]=xy(t.position);ctx.fillStyle='#fff182';ctx.strokeStyle='#263745';ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,6,0,2*Math.PI);ctx.fill();ctx.stroke();ctx.fillStyle='#fff7bf';ctx.font='bold 13px system-ui';label('발견 Type '+t.type+' · L'+t.life,x,y,'#fff7bf')});
+if(document.querySelector('#truth').checked){f.truth.forEach(t=>{if(t.work_units<=0){cross(t.position,'#ff87b4');return}let[x,y]=xy(t.position);ctx.setLineDash([4,3]);ctx.strokeStyle='#ff75b0';ctx.lineWidth=2.5;ctx.beginPath();ctx.arc(x,y,11,0,2*Math.PI);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#ffb3d0';ctx.font='bold 13px system-ui';label('Type '+t.type+' · L'+t.work_units,x,y,'#ffb3d0')})}
+f.tracks.forEach(t=>{if(t.work_units<=0)return;let[x,y]=xy(t.position);ctx.fillStyle='#fff182';ctx.strokeStyle='#263745';ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,y,6,0,2*Math.PI);ctx.fill();ctx.stroke();ctx.fillStyle='#fff7bf';ctx.font='bold 13px system-ui';label('발견 Type '+t.type+' · L'+t.work_units,x,y,'#fff7bf')});
 f.pos.forEach((p,i)=>{let[x,y]=xy(p);if(document.querySelector('#trail').checked){ctx.strokeStyle=colors[i%5];ctx.lineWidth=1.7;ctx.beginPath();for(let k=Math.max(0,ix-70);k<=ix;k++){let z=xy(data.frames[k].pos[i]);k===Math.max(0,ix-70)?ctx.moveTo(...z):ctx.lineTo(...z)}ctx.stroke()}if(!f.active[i]){cross(p,'#8f9caa',5);ctx.fillStyle='#bcc9d7';;return}if(document.querySelector('#sensor').checked){let a=-f.heading[i],half=data.sensor_fov*Math.PI/360;ctx.fillStyle='rgba(255,255,255,.12)';ctx.strokeStyle='rgba(255,255,255,.45)';ctx.beginPath();ctx.moveTo(x,y);ctx.arc(x,y,data.sensor_range*77,a-half,a+half);ctx.closePath();ctx.fill();ctx.stroke()}if(f.goals[i]){ctx.strokeStyle=colors[i%5]+'90';ctx.setLineDash([3,5]);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(...xy(f.goals[i]));ctx.stroke();ctx.setLineDash([])}ctx.fillStyle=colors[i%5];ctx.beginPath();ctx.arc(x,y,5,0,2*Math.PI);ctx.fill();ctx.font='bold 13px system-ui';});
-document.querySelector('#clock').textContent=Math.floor(f.step/60)+':'+String(f.step%60).padStart(2,'0')+' / '+Math.floor(data.summary.steps/60)+':'+String(data.summary.steps%60).padStart(2,'0');document.querySelector('#scale').textContent='0 → '+f.maximum[layer].toFixed(3)+' 질량/km²';document.querySelector('#status').innerHTML='<b>seed '+data.seed+'</b><p>D'+data.scout+' 전역 탐색 전용<br>활성 드론 '+f.active.filter(Boolean).length+' / '+f.active.length+'<br>발견 '+f.tracks.length+'개 · 처리 완료 '+f.tracks.filter(t=>t.life===0).length+'개<br>보고 미발견 예상 '+f.reported_remaining.toFixed(2)+'<br>배경 총질량 '+f.background.toFixed(2)+'<br>점수 '+f.score.toFixed(1)+'</p><span class="small">드론은 도착 후 '+data.service_steps+'스텝 동안 처리하고 consume됩니다.</span>'}
+document.querySelector('#clock').textContent=Math.floor(f.step/60)+':'+String(f.step%60).padStart(2,'0')+' / '+Math.floor(data.summary.steps/60)+':'+String(data.summary.steps%60).padStart(2,'0');document.querySelector('#scale').textContent='0 → '+f.maximum[layer].toFixed(3)+' 질량/km²';document.querySelector('#status').innerHTML='<b>seed '+data.seed+'</b><p>D'+data.scout+' 전역 탐색 전용<br>활성 드론 '+f.active.filter(Boolean).length+' / '+f.active.length+'<br>발견 '+f.tracks.length+'개 · 처리 완료 '+f.tracks.filter(t=>t.work_units===0).length+'개<br>보고 미발견 예상 '+f.reported_remaining.toFixed(2)+'<br>배경 총질량 '+f.background.toFixed(2)+'<br>점수 '+f.score.toFixed(1)+'</p><span class="small">드론은 도착 후 '+data.service_steps+'스텝 동안 처리하고 의 작업이 종료됩니다.</span>'}
 document.querySelector('#events').innerHTML=data.events.filter(e=>e.kind!=='search').map(e=>'<div class="event" data-step="'+e.step+'"><b>'+Math.floor(e.step/60)+':'+String(e.step%60).padStart(2,'0')+'</b> '+e.message+'</div>').join('');document.querySelectorAll('.event').forEach(el=>el.onclick=()=>{slider.value=Math.max(0,data.frames.findIndex(f=>f.step>=+el.dataset.step));draw()});slider.oninput=draw;document.querySelectorAll('input[type=checkbox],#layer').forEach(e=>e.onchange=draw);document.querySelector('#play').onclick=()=>{if(timer){clearInterval(timer);timer=null;document.querySelector('#play').textContent='재생';return}document.querySelector('#play').textContent='정지';timer=setInterval(()=>{slider.value=Math.min(+slider.max,+slider.value+(+document.querySelector('#speed').value));draw();if(+slider.value===+slider.max){clearInterval(timer);timer=null;document.querySelector('#play').textContent='재생'}},120)};const seek=Number(new URLSearchParams(location.search).get('step')||0);if(seek>0)slider.value=Math.max(0,data.frames.findIndex(f=>f.step>=seek));draw();
 </script>'''
 if __name__=='__main__':main()

@@ -1,10 +1,10 @@
-"""Gymnasium declaration for the cooperative strike action space."""
+"""Gymnasium declaration for the cooperative final_mission action space."""
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from .env import World
 
-class TeamStrikeEnv(gym.Env):
+class TeamFinalMissionEnv(gym.Env):
     def __init__(self, config=None):
         self.world=World(config);c=self.world.c
         self.observation_space=spaces.Box(-1,1,shape=(c.n_agents,self.world.obs_dim),dtype=np.float32)

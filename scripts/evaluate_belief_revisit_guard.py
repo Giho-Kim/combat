@@ -11,7 +11,7 @@ import torch
 
 from pointmass_rl.belief_training import (GUARDED_EXPLORATION_RESOLVER, evaluate_belief,
                                           load_belief_checkpoint, summarize_belief_rows)
-from pointmass_rl.env import strike_action
+from pointmass_rl.env import final_mission_action
 from pointmass_rl.exploration import PolygonExplorationWorld
 
 
@@ -54,7 +54,7 @@ def evaluate(task):
                 action[agent] = candidates[np.argmax(heuristic[agent, candidates])]
                 occupied.add(action[agent])
 
-        _, _, _, _, metrics = world.step(strike_action(action), one_hot[action], decisions_only=True)
+        _, _, _, _, metrics = world.step(final_mission_action(action), one_hot[action], decisions_only=True)
 
     return dict(policy=policy, seed=seed, interventions=0, **metrics)
 

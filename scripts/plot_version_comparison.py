@@ -1,4 +1,4 @@
-"""Render the cached checkpoint comparison for presentation."""
+"""Plot saved checkpoint comparisons for drone rescue-site allocation."""
 import csv
 import json
 from pathlib import Path

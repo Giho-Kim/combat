@@ -8,7 +8,7 @@
   "dt": 1.0,
   "decision_interval": 1,
   "size": 100.0,
-  "strike_speed": 0.4444444444444444,
+  "final_mission_speed": 0.4444444444444444,
   "sensor_range": 15.0,
   "sensor_fov_deg": 120.0,
   "position_noise": 0.02,
@@ -22,9 +22,9 @@
   "formation_distance_spread": 5.0,
   "formation_two_progress": 0.55,
   "formation_two_lateral_offset": 8.0,
-  "strike_range": 0.05,
-  "strike_probability": 1.0,
-  "strike_steps_per_life": 10,
+  "final_mission_range": 0.05,
+  "final_mission_probability": 1.0,
+  "service_steps_per_unit": 10,
   "discount_gamma": 1.0,
   "gae_lambda": 0.97
 }

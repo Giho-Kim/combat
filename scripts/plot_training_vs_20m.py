@@ -1,4 +1,4 @@
-"""Compare saved live training evaluations with the existing 20M run."""
+"""Compare saved training evaluations for drone rescue-site allocation."""
 import argparse,csv,json,sys
 from dataclasses import asdict
 from pathlib import Path

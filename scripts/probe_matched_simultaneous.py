@@ -5,11 +5,11 @@ from pathlib import Path
 import numpy as np
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import pointmass_rl.strike_ppo as trainer
-from pointmass_rl.env import strike_action
+import pointmass_rl.final_mission_ppo as trainer
+from pointmass_rl.env import final_mission_action
 s=Path('scripts/probe_2x2_event_credit.py').read_text();exec(s[:s.index('Original=graph.GraphQBody')].replace("root=Path('runs/critic_2x2_event_credit')","root=Path('runs/critic_2x2_matched_simultaneous')"))
 # Train directly on the physical failure families, with independent positions/order.
-from pointmass_rl.strike_ppo import DecisionSchedule
+from pointmass_rl.final_mission_ppo import DecisionSchedule
 old_mask=DecisionSchedule.mask
 def fresh_mask(self,w,available):
  marker=(id(w),getattr(w,'episode_serial',0))
@@ -24,11 +24,11 @@ def failure_reset(self,*args,**kwargs):
  self.targets[:]=[[50,50],[30,50]] if deadline else [[30,50],[55,50]]
  self.pos+=self.rng.uniform(-2,2,(2,2));self.targets+=self.rng.uniform(-2,2,(2,2))
  shift=self.rng.uniform(-10,10,2);self.pos+=shift;self.targets+=shift
- self.target_type[:]=[1,2];self.target_life[:]=[1,1]
+ self.target_type[:]=[1,2];self.target_work_units[:]=[1,1]
  if self.rng.random()<.5:self.pos[:]=self.pos[::-1].copy()
  if self.rng.random()<.5:
   self.targets[:]=self.targets[::-1].copy();self.target_type[:]=self.target_type[::-1].copy()
- self.mem_type[:]=self.target_type;self.mem_life[:]=self.target_life
+ self.mem_type[:]=self.target_type;self.mem_work_units[:]=self.target_work_units
  return result
 World.reset=failure_reset
 Original=graph.GraphQBody
@@ -54,7 +54,7 @@ def sequential(model,worlds,schedules,deterministic=False):
  for j,(w,s) in enumerate(zip(worlds,schedules)):
   s.record(w,actions[j],decisions[j]&w.agent_active,probs[j])
  trace=dict(obs=obs,target=actions,logp=logps,probs=probs,action_mask=masks,decision=decisions)
- return strike_action(actions),[trace]
+ return final_mission_action(actions),[trace]
 # original simultaneous policy
 # An action-independent state baseline keeps autoregressive policy gradients valid.
 def update(m,optimizers,batch,probabilities,epochs,width):

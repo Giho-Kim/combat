@@ -8,8 +8,8 @@ from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 # Reuse physical families and resets only, not the previous training loops.
 s=Path('scripts/probe_matched_sequential.py').read_text();exec(s[:s.index('\nOriginal=graph.GraphQBody')])
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
-from pointmass_rl.strike_ppo import DecisionSchedule,_model_observation,model_from_checkpoint
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_ppo import DecisionSchedule,_model_observation,model_from_checkpoint
 out=Path('runs/critic_2x2_episode_exploration');out.mkdir(exist_ok=True);c.save(out/'config.json');torch.set_num_threads(1);torch.manual_seed(7);rng=np.random.default_rng(7);m=TargetAllocationActorCritic(2,2)
 data=np.load(out/'experience.npz');O=data['observations'];A=data['actions'];R=data['returns']
 m=model_from_checkpoint(out/'latest.pt',c)

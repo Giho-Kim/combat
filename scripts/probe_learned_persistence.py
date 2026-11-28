@@ -4,9 +4,9 @@ from pathlib import Path
 import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic as OriginalActor
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic as OriginalActor
 from pointmass_rl.graph_critic import GraphQBody
-import pointmass_rl.strike_target_actor as actor_module
+import pointmass_rl.final_mission_target_actor as actor_module
 class PersistentActor(OriginalActor):
  def __init__(self,*args,**kwargs):
   super().__init__(*args,**kwargs)

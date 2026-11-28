@@ -2,7 +2,7 @@
 
 The world deliberately keeps vehicle motion simple. Physical distances use
 100 m units (the default 100 x 100 map is 10 km x 10 km), while formations,
-sensing, jamming and strike semantics are represented explicitly.
+sensing, jamming and final_mission semantics are represented explicitly.
 """
 from dataclasses import asdict, dataclass
 import json
@@ -13,7 +13,7 @@ import numpy as np
 TARGET_FEATURES = 4
 SELF_FEATURES = 3
 SUCCESS_THRESHOLDS = (5, 8, 9, 11, 12)
-DAMAGE_REWARD_RATE = 1.0
+PROGRESS_REWARD_RATE = 1.0
 SUCCESS_BONUS = 0.0
 EVALUATION_TASKS = (
     "type1_formation_two",
@@ -37,25 +37,25 @@ _TARGET_TYPES_BY_THRESHOLD = {
 }
 
 
-def target_remaining_value(target_type, target_life):
-    """Return the value still available from a target at its current life."""
-    target_type, target_life = int(target_type), int(target_life)
-    if target_life <= 0:
+def target_remaining_value(target_type, target_work_units):
+    """Return the value still available from a target at its current work_units."""
+    target_type, target_work_units = int(target_type), int(target_work_units)
+    if target_work_units <= 0:
         return 0.0
     if target_type == 1:
-        return 5.0 if target_life >= 2 else 2.5
+        return 5.0 if target_work_units >= 2 else 2.5
     return float({2: 2, 3: 1}.get(target_type, 0))
 
 
-def strike_action(target):
+def final_mission_action(target):
     """Build the only public action: one target ID per drone."""
     return {"target": np.asarray(target)}
 
 
-def split_strike_action(action):
-    """Return target IDs from the strike-only action mapping."""
+def split_final_mission_action(action):
+    """Return target IDs from the final_mission-only action mapping."""
     if not isinstance(action, dict) or set(action) != {"target"}:
-        raise ValueError("Strike action must contain only target")
+        raise ValueError("FinalMission action must contain only target")
     return np.asarray(action["target"])
 
 
@@ -74,7 +74,7 @@ class Config:
     sticky_assignment: bool = False
     commit_target: bool = False
     size: float = 100.0
-    strike_speed: float = 4.0 / 9.0  # 160 km/h
+    final_mission_speed: float = 4.0 / 9.0  # 160 km/h
     sensor_range: float = 15.0
     sensor_fov_deg: float = 120.0
     position_noise: float = 0.02
@@ -88,9 +88,9 @@ class Config:
     formation_distance_spread: float = 5.0
     formation_two_progress: float = 0.55
     formation_two_lateral_offset: float = 8.0
-    strike_range: float = 0.05
-    strike_probability: float = 1.0
-    strike_steps_per_life: int = 10
+    final_mission_range: float = 0.05
+    final_mission_probability: float = 1.0
+    service_steps_per_unit: int = 10
     discount_gamma: float = 1.0
     gae_lambda: float = 0.97
     mode: str = 'known'
@@ -100,6 +100,7 @@ class Config:
     belief_search_margin: float = 10.0  # 1 km on each side of the 10 km map.
     belief_lawnmower: bool = True
     belief_exploration_only: bool = False
+    exploration_every_step: bool = False
     belief_sweep_spacing: float = 1.0  # 100 m lanes for polygon exploration.
     belief_initial_intel: bool = False
     belief_report_min_separation: float = 0.0  # Report sites versus unreported formation, map units.
@@ -118,6 +119,8 @@ class Config:
     formation_layout: str = 'legacy'
 
     def __post_init__(self):
+        if type(self.exploration_every_step) is not bool:
+            raise ValueError('exploration_every_step must be a boolean')
         if type(self.belief_exploration_only) is not bool:
             raise ValueError('belief_exploration_only must be a boolean')
         if not np.isfinite(self.belief_sweep_spacing) or self.belief_sweep_spacing <= 0:
@@ -194,8 +197,8 @@ class Config:
             raise ValueError("Random target composition needs at least three targets for two formations")
         if self.horizon < 2:
             raise ValueError("horizon must be at least 2")
-        positive = ("dt", "size", "strike_speed", "sensor_range",
-                    "strike_range", "friendly_formation_radius",
+        positive = ("dt", "size", "final_mission_speed", "sensor_range",
+                    "final_mission_range", "friendly_formation_radius",
                     "target_formation_radius", "formation_separation",
                     "formation_distance_spread",
                     "formation_two_lateral_offset",
@@ -206,10 +209,10 @@ class Config:
             raise ValueError('belief_report_min_separation must be finite and nonnegative')
         if self.target_motion_scale < 0:
             raise ValueError("target_motion_scale must be nonnegative")
-        if not 0 <= self.strike_probability <= 1:
-            raise ValueError("strike_probability must be in [0, 1]")
-        if not isinstance(self.strike_steps_per_life, int) or self.strike_steps_per_life <= 0:
-            raise ValueError("strike_steps_per_life must be a positive integer")
+        if not 0 <= self.final_mission_probability <= 1:
+            raise ValueError("final_mission_probability must be in [0, 1]")
+        if not isinstance(self.service_steps_per_unit, int) or self.service_steps_per_unit <= 0:
+            raise ValueError("service_steps_per_unit must be a positive integer")
         if not 0 < self.sensor_fov_deg <= 360:
             raise ValueError("sensor_fov_deg must be in (0, 360]")
         if self.mode == 'belief' and self.belief_initial_intel and not self.belief_soft_detection:
@@ -230,13 +233,20 @@ class Config:
 
     @property
     def speed(self):
-        return self.strike_speed
+        return self.final_mission_speed
 
     @classmethod
     def load(cls, path=None):
         if path is None:
             return cls()
-        data = json.loads(Path(path).read_text())
+        return cls.from_saved_dict(json.loads(Path(path).read_text()))
+
+    @classmethod
+    def from_saved_dict(cls, values):
+        data = dict(values)
+        previous_steps = data.pop("final_mission_steps_per_life", None)
+        if previous_steps is not None:
+            data.setdefault("service_steps_per_unit", previous_steps)
         # Older saved runs contain reward coefficients that no longer apply.
         data.pop("damage_value_reward_scale", None)
         data.pop("damage_credit_scale", None)
@@ -293,6 +303,43 @@ class World:
                 return point
         raise RuntimeError("Could not place formation member")
 
+    def _sample_formation_center(self, formation, centers, evaluation_task, success_threshold, balanced_five_target_case):
+        c = self.c
+        center = None
+        if formation == 0:
+            if evaluation_task == EVALUATION_TASKS[1]:
+                separation, spread = 25.0, 2.0
+            elif evaluation_task == EVALUATION_TASKS[2]:
+                separation, spread = 54.0, 4.0
+            elif (evaluation_task is None and success_threshold is None
+                  and balanced_five_target_case and c.formation_layout == 'legacy'):
+                # Train every B composition across the same near/far
+                # range; keep the fixed evaluation layouts unchanged.
+                separation, spread = 25.0, 33.0
+            else:
+                separation, spread = (c.formation_separation,
+                                      c.formation_distance_spread)
+            for _ in range(200):
+                candidate = self._sample_point(c.min_spawn_distance)
+                distance = np.linalg.norm(candidate - self.agent_start_center)
+                if separation <= distance <= separation + spread:
+                    center = candidate
+                    break
+        else:
+            route = centers[0] - self.agent_start_center
+            direction = route / np.linalg.norm(route)
+            lateral = np.array([-direction[1], direction[0]])
+            for side in self.rng.permutation([-1.0, 1.0]):
+                candidate = (self.agent_start_center + c.formation_two_progress * route
+                             + side * c.formation_two_lateral_offset * lateral)
+                if self._valid_spawn(candidate, c.min_spawn_distance):
+                    center = candidate
+                    break
+        return center
+
+    def _sample_start_center(self):
+        return self._sample_point(self.c.min_spawn_distance + self.c.friendly_formation_radius)
+
     def reset(self, seed=None, success_threshold=None, evaluation_task=None):
         """Reset the world, retrying deterministic layout generations on failure."""
         if evaluation_task is not None:
@@ -327,7 +374,7 @@ class World:
     def _reset_once(self, seed, success_threshold=None, evaluation_task=None):
         c = self.c
         seeds = seed.spawn(5)
-        (self.rng, self.motion_rng, self.sensor_rng, self.combat_rng,
+        (self.rng, self.motion_rng, self.sensor_rng, self.final_mission_rng,
          self.allocation_rng) = [np.random.default_rng(s) for s in seeds]
         self.t, self.done = 0, False
         edge = 3.0
@@ -339,17 +386,17 @@ class World:
         self.target_exists = np.zeros(c.n_targets, dtype=bool)
         self.target_exists[:actual_targets] = True
 
-        self.friendly_center = self._sample_point(c.min_spawn_distance + c.friendly_formation_radius)
+        self.agent_start_center = self._sample_start_center()
         self.pos = np.tile(self.base, (self.n, 1))
         for i in np.flatnonzero(self.agent_active):
-            self.pos[i] = self._sample_cluster_member(self.friendly_center, c.friendly_formation_radius)
+            self.pos[i] = self._sample_cluster_member(self.agent_start_center, c.friendly_formation_radius)
         self.vel = np.zeros((self.n, 2))
         self.heading = self.rng.uniform(-np.pi, np.pi, self.n)
         self.targets = np.full((c.n_targets, 2), np.nan)
         self.target_vel = np.zeros((c.n_targets, 2))
         self.target_base_vel = np.zeros((c.n_targets, 2))
         self.target_type = np.zeros(c.n_targets, dtype=int)
-        self.target_life = np.zeros(c.n_targets, dtype=int)
+        self.target_work_units = np.zeros(c.n_targets, dtype=int)
         self.target_score = np.zeros(c.n_targets, dtype=int)
         self.spawn_step = np.full(c.n_targets, c.horizon + 1, dtype=int)
         self.spawn_position = np.full((c.n_targets, 2), np.nan)
@@ -382,36 +429,8 @@ class World:
             candidate_positions = np.full((len(target_ids), 2), np.nan)
             try:
                 for formation in range(formation_count):
-                    center = None
-                    if formation == 0:
-                        if evaluation_task == EVALUATION_TASKS[1]:
-                            separation, spread = 25.0, 2.0
-                        elif evaluation_task == EVALUATION_TASKS[2]:
-                            separation, spread = 54.0, 4.0
-                        elif (evaluation_task is None and success_threshold is None
-                              and balanced_five_target_case and c.formation_layout == 'legacy'):
-                            # Train every B composition across the same near/far
-                            # range; keep the fixed evaluation layouts unchanged.
-                            separation, spread = 25.0, 33.0
-                        else:
-                            separation, spread = (c.formation_separation,
-                                                  c.formation_distance_spread)
-                        for _ in range(200):
-                            candidate = self._sample_point(c.min_spawn_distance)
-                            distance = np.linalg.norm(candidate - self.friendly_center)
-                            if separation <= distance <= separation + spread:
-                                center = candidate
-                                break
-                    else:
-                        route = centers[0] - self.friendly_center
-                        direction = route / np.linalg.norm(route)
-                        lateral = np.array([-direction[1], direction[0]])
-                        for side in self.rng.permutation([-1.0, 1.0]):
-                            candidate = (self.friendly_center + c.formation_two_progress * route
-                                         + side * c.formation_two_lateral_offset * lateral)
-                            if self._valid_spawn(candidate, c.min_spawn_distance):
-                                center = candidate
-                                break
+                    center = self._sample_formation_center(
+                        formation, centers, evaluation_task, success_threshold, balanced_five_target_case)
                     if center is None:
                         raise RuntimeError("Could not place target formation center")
                     centers.append(center)
@@ -454,7 +473,7 @@ class World:
             formation = self.target_formation[j]
             typ = int(typ)
             self.target_type[j] = typ
-            self.target_life[j] = 2 if typ == 1 else 1
+            self.target_work_units[j] = 2 if typ == 1 else 1
             self.target_score[j] = {1: 5, 2: 2, 3: 1}[typ]
             self.spawn_position[j] = point
             self.spawn_step[j] = 0
@@ -468,30 +487,30 @@ class World:
 
         self.mem_pos = np.zeros((self.n, c.n_targets, 2))
         self.mem_type = np.zeros((self.n, c.n_targets), dtype=int)
-        self.mem_life = np.zeros((self.n, c.n_targets), dtype=int)
+        self.mem_work_units = np.zeros((self.n, c.n_targets), dtype=int)
         self.coverage = np.zeros((self.n, 10, 10), dtype=bool)
         self.last_goal = self.pos.copy()
         self.discovered = np.zeros(c.n_targets, dtype=bool)
-        self.destroyed = np.zeros(c.n_targets, dtype=bool)
+        self.target_completed = np.zeros(c.n_targets, dtype=bool)
         self.first_detection = 0
         self.first_score_step = None
         self.score = 0
         self.score_area = 0.0
-        self.target_destroy_step = np.full(c.n_targets, -1, dtype=int)
-        self.strike_progress = np.zeros(c.n_targets, dtype=int)
-        self.agent_strike_progress = np.zeros(self.n, dtype=int)
+        self.target_completion_step = np.full(c.n_targets, -1, dtype=int)
+        self.final_mission_progress = np.zeros(c.n_targets, dtype=int)
+        self.agent_final_mission_progress = np.zeros(self.n, dtype=int)
         # Current target assignments include approaching and striking drones.
-        # Assignment alone does not reserve a strike participation slot.
+        # Assignment alone does not reserve a final_mission participation slot.
         self.target_assignment = np.zeros((c.n_targets, self.n), dtype=bool)
-        # Each participant tracks its own strike duration. Late arrivals may
-        # fill an open life slot but never inherit an earlier arrival's progress.
-        self.strike_participants = np.zeros((c.n_targets, self.n), dtype=bool)
+        # Each participant tracks its own final_mission duration. Late arrivals may
+        # fill an open work_units slot but never inherit an earlier arrival's progress.
+        self.final_mission_participants = np.zeros((c.n_targets, self.n), dtype=bool)
         self.last_agent_terminated = np.zeros(self.n, dtype=bool)
-        self.last_damage_by_agent = np.zeros(self.n, dtype=float)
+        self.last_progress_value_by_agent = np.zeros(self.n, dtype=float)
         self.initial_score = int(self.target_score[self.target_exists].sum())
         formation_one = self.target_exists & (self.target_formation == 0)
         self.formation_one_initial_score = int(self.target_score[formation_one].sum())
-        self.strike_attempts = self.strike_hits = 0
+        self.final_mission_attempts = self.final_mission_successes = 0
         self.rewards_total = 0.0
         self.discounted_rewards_total = 0.0
         self._sense()
@@ -501,17 +520,17 @@ class World:
         return self.observation.copy()
 
     def _known_mask(self, i):
-        return self.target_exists & ~self.destroyed
+        return self.target_exists & ~self.target_completed
 
     def _sense(self):
         """Give every active drone exact current state for every live target."""
         self.perceived_pos = self.pos.copy()
         self.visible = (self.agent_active[:, None] & self.active[None]
-                        & ~self.destroyed[None])
+                        & ~self.target_completed[None])
         for i, j in zip(*np.nonzero(self.visible)):
             self.mem_pos[i, j] = self.targets[j]
             self.mem_type[i, j] = self.target_type[j]
-            self.mem_life[i, j] = self.target_life[j]
+            self.mem_work_units[i, j] = self.target_work_units[j]
 
     def _obs(self):
         c = self.c
@@ -521,22 +540,22 @@ class World:
                          / self.formation_one_initial_score)
         for i in np.flatnonzero(self.agent_active):
             obs[i, :SELF_FEATURES] = [(c.horizon - self.t) / c.horizon,
-                self.agent_strike_progress[i] / c.strike_steps_per_life
-                if self.strike_participants[:, i].any() else 0.0,
+                self.agent_final_mission_progress[i] / c.service_steps_per_unit
+                if self.final_mission_participants[:, i].any() else 0.0,
                 reward_margin]
             for j in np.flatnonzero(self._known_mask(i)):
                 k = target_start + TARGET_FEATURES * j
                 remaining_value = target_remaining_value(
-                    self.mem_type[i, j], self.mem_life[i, j])
+                    self.mem_type[i, j], self.mem_work_units[i, j])
                 capacity = min(2 if self.target_type[j] == 1 else 1,
-                               int(self.target_life[j]))
-                participant = self.strike_participants[j, i]
+                               int(self.target_work_units[j]))
+                participant = self.final_mission_participants[j, i]
                 occupied = int(np.count_nonzero(
-                    self.agent_active & self.strike_participants[j]))
+                    self.agent_active & self.final_mission_participants[j]))
                 in_range = (np.linalg.norm(self.pos[i] - self.targets[j])
-                            <= c.strike_range)
+                            <= c.final_mission_range)
                 # Approaching drones do not reserve capacity. A live target is
-                # masked for an outsider only when it reaches strike range and
+                # masked for an outsider only when it reaches final_mission range and
                 # actual participants have already filled every available slot.
                 selectable = participant or occupied < capacity or not in_range
                 obs[i, k:k + TARGET_FEATURES] = [
@@ -556,23 +575,23 @@ class World:
         return np.clip(goals, 0, self.c.size)
 
     def locked_targets(self):
-        """Only participating drones are committed during an ongoing strike."""
-        participating = self.agent_active & self.strike_participants.any(axis=0)
-        return np.where(participating, self.strike_participants.argmax(axis=0), -1)
+        """Only participating drones are committed during an ongoing final_mission."""
+        participating = self.agent_active & self.final_mission_participants.any(axis=0)
+        return np.where(participating, self.final_mission_participants.argmax(axis=0), -1)
 
     def committed_targets(self, proposed_targets):
-        """Keep each drone's current target until its strike action completes."""
+        """Keep each drone's current target until its final_mission action completes."""
         proposed_targets = np.asarray(proposed_targets)
         current = self.locked_targets()
         locked = ((current >= 0)
                   & self.target_exists[np.maximum(current, 0)]
-                  & ~self.destroyed[np.maximum(current, 0)])
+                  & ~self.target_completed[np.maximum(current, 0)])
         return np.where(locked, current, proposed_targets)
 
     def _move_targets(self):
         c = self.c
-        for j in np.flatnonzero(self.active & ~self.destroyed):
-            scale = 0.5 if self.target_type[j] == 1 and self.target_life[j] == 1 else 1.0
+        for j in np.flatnonzero(self.active & ~self.target_completed):
+            scale = 0.5 if self.target_type[j] == 1 and self.target_work_units[j] == 1 else 1.0
             velocity = self.target_base_vel[j] * scale
             proposed = self.targets[j] + velocity * c.dt
             for axis in range(2):
@@ -583,17 +602,17 @@ class World:
             self.targets[j] = proposed
             self.target_vel[j] = velocity
 
-    def _resolve_strikes(self, target_ids):
-        for j in np.flatnonzero(self.active & ~self.destroyed):
+    def _resolve_final_missions(self, target_ids):
+        for j in np.flatnonzero(self.active & ~self.target_completed):
             required = min(2 if self.target_type[j] == 1 else 1,
-                           int(self.target_life[j]))
-            open_slots = required - int(self.strike_participants[j].sum())
+                           int(self.target_work_units[j]))
+            open_slots = required - int(self.final_mission_participants[j].sum())
             if open_slots > 0:
-                attackers = np.flatnonzero((target_ids == j) & self.agent_active
-                                           & ~self.strike_participants[j])
-                close = attackers[
-                    np.linalg.norm(self.pos[attackers] - self.targets[j], axis=1)
-                    <= self.c.strike_range]
+                assigned_agents = np.flatnonzero((target_ids == j) & self.agent_active
+                                           & ~self.final_mission_participants[j])
+                close = assigned_agents[
+                    np.linalg.norm(self.pos[assigned_agents] - self.targets[j], axis=1)
+                    <= self.c.final_mission_range]
                 if len(close) > open_slots:
                     # Existing participants keep their slots. Only drones that
                     # arrive together for the remaining slots are sampled.
@@ -601,63 +620,63 @@ class World:
                         close, size=open_slots, replace=False)
                 else:
                     participants = close
-                self.strike_participants[j, participants] = True
-                self.agent_strike_progress[participants] = 0
-            current = self.strike_participants[j].copy()
+                self.final_mission_participants[j, participants] = True
+                self.agent_final_mission_progress[participants] = 0
+            current = self.final_mission_participants[j].copy()
             if not current.any():
-                self.strike_progress[j] = 0
+                self.final_mission_progress[j] = 0
                 continue
-            # Every drone must serve the full strike duration from its own
+            # Every drone must serve the full final_mission duration from its own
             # arrival. Late arrivals do not inherit another drone's progress.
-            self.agent_strike_progress[current] += 1
+            self.agent_final_mission_progress[current] += 1
             finishing = current & (
-                self.agent_strike_progress >= self.c.strike_steps_per_life)
+                self.agent_final_mission_progress >= self.c.service_steps_per_unit)
             if not finishing.any():
-                self.strike_progress[j] = int(
-                    self.agent_strike_progress[current].max())
+                self.final_mission_progress[j] = int(
+                    self.agent_final_mission_progress[current].max())
                 continue
-            self.strike_attempts += 1
-            self.strike_participants[j, finishing] = False
+            self.final_mission_attempts += 1
+            self.final_mission_participants[j, finishing] = False
             self.target_assignment[:, finishing] = False
-            if self.combat_rng.random() >= self.c.strike_probability:
+            if self.final_mission_rng.random() >= self.c.final_mission_probability:
                 self.agent_active[finishing] = False
-                self.agent_strike_progress[finishing] = 0
-                remaining = self.strike_participants[j]
-                self.strike_progress[j] = (int(
-                    self.agent_strike_progress[remaining].max())
+                self.agent_final_mission_progress[finishing] = 0
+                remaining = self.final_mission_participants[j]
+                self.final_mission_progress[j] = (int(
+                    self.agent_final_mission_progress[remaining].max())
                     if remaining.any() else 0)
                 continue
-            self.strike_hits += 1
-            damage = min(self.target_life[j], int(finishing.sum()))
-            old_life = int(self.target_life[j])
-            self.target_life[j] -= damage
-            self.mem_life[:, j] = self.target_life[j]
-            damage_value = (target_remaining_value(self.target_type[j], old_life)
+            self.final_mission_successes += 1
+            progress = min(self.target_work_units[j], int(finishing.sum()))
+            old_work_units = int(self.target_work_units[j])
+            self.target_work_units[j] -= progress
+            self.mem_work_units[:, j] = self.target_work_units[j]
+            progress_value = (target_remaining_value(self.target_type[j], old_work_units)
                             - target_remaining_value(
-                                self.target_type[j], self.target_life[j]))
-            self.score += damage_value
-            self.last_damage_by_agent[finishing] += damage_value / finishing.sum()
-            if self.target_life[j] <= 0:
-                self.destroyed[j] = True
+                                self.target_type[j], self.target_work_units[j]))
+            self.score += progress_value
+            self.last_progress_value_by_agent[finishing] += progress_value / finishing.sum()
+            if self.target_work_units[j] <= 0:
+                self.target_completed[j] = True
                 self.active[j] = False
-                self.target_destroy_step[j] = self.t
+                self.target_completion_step[j] = self.t
             self.agent_active[finishing] = False
-            self.agent_strike_progress[finishing] = 0
-            remaining = self.strike_participants[j]
-            self.strike_progress[j] = (int(
-                self.agent_strike_progress[remaining].max())
+            self.agent_final_mission_progress[finishing] = 0
+            remaining = self.final_mission_participants[j]
+            self.final_mission_progress[j] = (int(
+                self.agent_final_mission_progress[remaining].max())
                 if remaining.any() else 0)
 
     def step(self, action):
         if self.done:
             raise RuntimeError("Episode ended; call reset()")
-        proposed_targets = split_strike_action(action)
+        proposed_targets = split_final_mission_action(action)
         if proposed_targets.shape != (self.n,) or not np.issubdtype(proposed_targets.dtype, np.integer) or np.any((proposed_targets < 0) | (proposed_targets >= self.c.n_targets)):
             raise ValueError(f"Expected {self.n} target IDs")
         targets = self.committed_targets(proposed_targets)
         c = self.c
         reward = np.zeros(self.n, dtype=float)
-        self.last_damage_by_agent.fill(0.0)
+        self.last_progress_value_by_agent.fill(0.0)
         step_active = self.agent_active.copy()
         agent_count = int(step_active.sum())
         old_pos = self.pos.copy()
@@ -669,7 +688,7 @@ class World:
         for i in np.flatnonzero(self.agent_active):
             delta = goals[i] - self.pos[i]
             dist = np.linalg.norm(delta)
-            proposed = self.pos[i] + delta * min(1.0, c.strike_speed * c.dt / max(dist, 1e-12))
+            proposed = self.pos[i] + delta * min(1.0, c.final_mission_speed * c.dt / max(dist, 1e-12))
             self.pos[i] = np.clip(proposed, 0, c.size)
             moved = self.pos[i] - old_pos[i]
             if np.linalg.norm(moved) > 1e-12:
@@ -678,14 +697,14 @@ class World:
         self.t += 1
         # Resolve an approach completed during this decision interval before
         # advancing the target to the next interval.
-        self._resolve_strikes(targets)
-        self.target_assignment[~self.target_exists | self.destroyed] = False
-        team_step_reward = DAMAGE_REWARD_RATE * self.last_damage_by_agent.sum()
+        self._resolve_final_missions(targets)
+        self.target_assignment[~self.target_exists | self.target_completed] = False
+        team_step_reward = PROGRESS_REWARD_RATE * self.last_progress_value_by_agent.sum()
         if agent_count:
             reward[step_active] += team_step_reward / agent_count
         else:
-            # Keep fixed-horizon team rewards observable after every drone has
-            # been expended; PPO consumes reward.sum() as the cooperative reward.
+            # Keep fixed-horizon team rewards observable after every drone
+            # becomes inactive. PPO uses reward.sum() as the cooperative reward.
             reward += team_step_reward / self.n
         self.vel[~self.agent_active] = 0
         self.last_agent_terminated = step_active & ~self.agent_active
@@ -695,7 +714,7 @@ class World:
         self._move_targets()
         self._sense()
         self.discovered |= self.visible.any(axis=0)
-        all_targets_destroyed = bool(np.all(~self.target_exists | self.destroyed))
+        all_targets_completed = bool(np.all(~self.target_exists | self.target_completed))
         terminated = False
         truncated = self.t >= c.horizon
         self.done = truncated
@@ -713,14 +732,14 @@ class World:
             score=float(self.score),
             baseline_score=float(self.formation_one_initial_score),
             mission_success=bool(self.score >= self.formation_one_initial_score),
-            destroyed_fraction=float(self.destroyed[initial].mean()) if initial.any() else 1.0,
+            completion_fraction=float(self.target_completed[initial].mean()) if initial.any() else 1.0,
             discovery_fraction=float(self.discovered[self.target_exists].mean()),
             area_coverage=float(self.coverage.any(axis=0).mean()),
             first_detection_step=self.first_detection, active_agents=int(self.agent_active.sum()),
             first_score_step=self.first_score_step,
             score_auc=float(self.score_area / max(1, self.t)),
             targets=int(initial.sum()), success_threshold=float(self.formation_one_initial_score),
-            strike_attempts=self.strike_attempts, strike_hits=self.strike_hits,
+            final_mission_attempts=self.final_mission_attempts, final_mission_hits=self.final_mission_successes,
             agents_expended=int(self.initial_agent_count - self.agent_active.sum()),
             agent_terminated=self.last_agent_terminated.tolist(),
             steps=self.t)
@@ -728,13 +747,13 @@ class World:
     def snapshot(self):
         return dict(step=self.t, base=self.base.tolist(), drones=self.pos.tolist(), agent_active=self.agent_active.tolist(),
             targets=self.targets.tolist(), target_exists=self.target_exists.tolist(), active=self.active.tolist(),
-            destroyed=self.destroyed.tolist(), target_formation=self.target_formation.tolist(),
-            target_type=self.target_type.tolist(), target_life=self.target_life.tolist(),
-            target_score=[target_remaining_value(typ, life) for typ, life in
-                          zip(self.target_type, self.target_life)],
-            target_destroy_step=self.target_destroy_step.tolist(),
+            target_completed=self.target_completed.tolist(), target_formation=self.target_formation.tolist(),
+            target_type=self.target_type.tolist(), target_work_units=self.target_work_units.tolist(),
+            target_score=[target_remaining_value(typ, work_units) for typ, work_units in
+                          zip(self.target_type, self.target_work_units)],
+            target_completion_step=self.target_completion_step.tolist(),
             visible=self.visible.tolist(),
-            goal_positions=self.last_goal.tolist(), strike_progress=self.strike_progress.tolist(),
-            agent_strike_progress=self.agent_strike_progress.tolist(),
+            goal_positions=self.last_goal.tolist(), final_mission_progress=self.final_mission_progress.tolist(),
+            agent_final_mission_progress=self.agent_final_mission_progress.tolist(),
             target_assignment=self.target_assignment.tolist(),
-            strike_participants=self.strike_participants.tolist(), metrics=self.metrics())
+            final_mission_participants=self.final_mission_participants.tolist(), metrics=self.metrics())

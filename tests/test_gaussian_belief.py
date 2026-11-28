@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import torch
 
-from pointmass_rl.env import Config, strike_action
+from pointmass_rl.env import Config, final_mission_action
 from pointmass_rl.gaussian_belief import GaussianTargetBelief
 from pointmass_rl.belief_env import BeliefWorld
 from pointmass_rl.belief_policy import BeliefActorCritic, choose_action, stack_observations
@@ -35,7 +35,7 @@ class GaussianBeliefTests(unittest.TestCase):
     def test_distinct_individual_reports_and_no_truth_leak(self):
         world = BeliefWorld(self.config())
         world.reset(10000)
-        packet = world.belief.initial_intel
+        packet = world.belief.initial_report
         self.assertEqual(len(packet['objects']), 3)
         means = np.array([r['position'] for r in packet['objects']])
         distance = np.linalg.norm(means[:, None]-means[None, :], axis=-1)
@@ -48,7 +48,7 @@ class GaussianBeliefTests(unittest.TestCase):
             self.assertEqual(set(report), {'position', 'type', 'sigma_hint', 'log_sigma_std'})
         before = deepcopy(packet)
         world._world.targets[:] = 80
-        self.assertEqual(before, world.belief.initial_intel)
+        self.assertEqual(before, world.belief.initial_report)
         np.testing.assert_allclose(world.belief.remaining_types, packet['type_counts'])
         self.assertAlmostEqual(world.belief.background_mass, 1.)
 
@@ -172,7 +172,7 @@ class GaussianBeliefTests(unittest.TestCase):
                 action, probability = choose_action(model, obs, True, 'score')
                 q = model.joint_q(stack_observations([obs]), torch.as_tensor(action[None]))
                 self.assertTrue(torch.isfinite(q).all())
-                obs, *_ = w.step(strike_action(action), probability)
+                obs, *_ = w.step(final_mission_action(action), probability)
             self.assertEqual(frame(w, obs)['background_search_mass'], 1.)
             with self.assertRaises(ValueError):
                 load_belief_checkpoint(Path(out)/'latest.pt', replace(c, belief_representation='histogram'))

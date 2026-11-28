@@ -7,7 +7,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config,World
-from pointmass_rl.strike_ppo import model_from_checkpoint,evaluate_model,DecisionSchedule,_model_observation
+from pointmass_rl.final_mission_ppo import model_from_checkpoint,evaluate_model,DecisionSchedule,_model_observation
 OUT=ROOT/'runs/encoder_engineering_500k'
 torch.set_num_threads(1)
 rows=[];fig,axes=plt.subplots(1,2,figsize=(12,4.6))

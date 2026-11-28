@@ -1,7 +1,7 @@
-"""Centralized PPO for cooperative strike-target prioritization.
+"""Centralized PPO for cooperative final_mission-target prioritization.
 
 Each drone's shared actor sees the global state and its one-hot identity.
-The actor masks destroyed targets and targets whose strike slots are full.
+The actor masks completed targets and targets whose final_mission slots are full.
 """
 from pathlib import Path
 from copy import deepcopy
@@ -15,7 +15,7 @@ try:
     from torch.distributions import Categorical
 except ImportError as exc:
     raise ImportError("Install the rl extra: pip install -e '.[rl]'") from exc
-from .env import DAMAGE_REWARD_RATE, EVALUATION_TASKS, SUCCESS_THRESHOLDS, evaluation_task_for_episode, strike_action
+from .env import PROGRESS_REWARD_RATE, EVALUATION_TASKS, SUCCESS_THRESHOLDS, evaluation_task_for_episode, final_mission_action
 
 def _uses_balanced_thresholds(config):
     return config.n_targets == 5 and config.min_targets == 5 and (not config.randomize_counts) and (not config.randomize_target_composition)
@@ -116,7 +116,7 @@ class _ActorCriticBase(nn.Module):
         global_obs = model_tensor(self, actor_observation(world, one_hot=self.one_hot_target_type), dtype=torch.float32)
         available = self.target_mask(global_obs).cpu().numpy()
         if getattr(self, 'training_settings', {}).get('deadline_mask', False):
-            from .strike_lookahead import deadline_action_mask
+            from .final_mission_lookahead import deadline_action_mask
             available = deadline_action_mask(world, available)
         return available
 
@@ -124,7 +124,7 @@ class _ActorCriticBase(nn.Module):
         target_start = 3 + 5 * self.n_agents
         width = self.target_features
         target_records = obs[..., target_start:target_start + width * self.n_targets].reshape(*obs.shape[:-1], self.n_targets, width)
-        life = target_records[..., -1]
+        work_units = target_records[..., -1]
         type_one = target_records[..., 2] > 0.5 if self.one_hot_target_type else target_records[..., 2] < 0.5
         drone_start = 3
         drone_records = obs[..., drone_start:drone_start + 5 * self.n_agents]
@@ -134,13 +134,13 @@ class _ActorCriticBase(nn.Module):
         assignments = obs[..., assignment_start:assignment_end].reshape(*obs.shape[:-1], self.n_targets, self.n_agents) > 0.5
         occupied = (assignments & participating.unsqueeze(-2)).sum(dim=-1)
         capacity = torch.where(type_one, 2, 1)
-        remaining_life = torch.round(life * 2).long()
-        capacity = torch.minimum(capacity, remaining_life)
+        remaining_work_units = torch.round(work_units * 2).long()
+        capacity = torch.minimum(capacity, remaining_work_units)
         identities = obs[..., -self.n_agents:].argmax(dim=-1)
         own_participation = participating.gather(-1, identities.unsqueeze(-1)).squeeze(-1)
         own_assignment = assignments.gather(-1, identities[..., None, None].expand(*identities.shape, self.n_targets, 1)).squeeze(-1)
         own_slot = own_participation.unsqueeze(-1) & own_assignment
-        mask = (life > 0) & ((occupied < capacity) | own_slot)
+        mask = (work_units > 0) & ((occupied < capacity) | own_slot)
         mask = mask.clone()
         mask[..., 0] |= ~mask.any(dim=-1)
         return mask
@@ -161,7 +161,7 @@ class _ActorCriticBase(nn.Module):
             action_mask = self.target_mask(obs)
         dist = self.distributions(obs, action_mask)
         target = dist.probs.argmax(-1) if deterministic else dist.sample()
-        return (strike_action(target.cpu().numpy()), {'logp': dist.log_prob(target), 'action_mask': action_mask, 'probs': dist.probs})
+        return (final_mission_action(target.cpu().numpy()), {'logp': dist.log_prob(target), 'action_mask': action_mask, 'probs': dist.probs})
 
     def evaluate_actions(self, obs, target, action_mask):
         dist = self.distributions(obs, action_mask)
@@ -266,7 +266,7 @@ class DecisionSchedule:
 
 def _normalized_drone_velocities(world):
     """Measured displacement/dt, in world axes, normalized by movement speed."""
-    return (world.vel / world.c.strike_speed * world.agent_active[:, None]).astype(np.float32)
+    return (world.vel / world.c.final_mission_speed * world.agent_active[:, None]).astype(np.float32)
 
 def _model_observation(model, world, schedule):
     if getattr(model, 'actor_previous_actions', False):
@@ -282,8 +282,8 @@ def _model_critic_state(model, world, schedule):
         drones = state[3:target_start].reshape(model.n_agents, 5)
         target_end = target_start + model.target_features * model.n_targets
         parts = [state[:1], drones[:, [0, 1, 2, 4]].reshape(-1), state[target_start:target_end]]
-        if model.critic_strike_participants:
-            parts.append(world.strike_participants.astype(np.float32).reshape(-1))
+        if model.critic_final_mission_participants:
+            parts.append(world.final_mission_participants.astype(np.float32).reshape(-1))
         state = np.concatenate(parts)
     if getattr(model, 'critic_previous_probabilities', False):
         probabilities = np.full_like(schedule.previous_action_probabilities, 1.0 / model.n_targets) if world.t == 0 else schedule.previous_action_probabilities
@@ -322,7 +322,7 @@ def allocated_actions(model, worlds, schedules, deterministic=False):
     for (index, (world, schedule)) in enumerate(zip(worlds, schedules)):
         changed = active[index] & decisions[index]
         schedule.record(world, targets[index], changed, None if probabilities is None else probabilities[index])
-    return (strike_action(targets), traces)
+    return (final_mission_action(targets), traces)
 
 def evaluation_resolved_action(model, world, schedule, deterministic=True):
     """Actor-score rejection/reselection used only for evaluation."""
@@ -343,7 +343,7 @@ def evaluation_resolved_action(model, world, schedule, deterministic=True):
         rejected = []
         for target in range(world.c.n_targets):
             candidates = np.flatnonzero(world.agent_active & (targets == target))
-            capacity = min(2 if world.target_type[target] == 1 else 1, int(world.target_life[target]))
+            capacity = min(2 if world.target_type[target] == 1 else 1, int(world.target_work_units[target]))
             ranked = sorted(candidates, key=lambda agent: (locked[agent] != target, -float(priority[agent, target]), int(agent)))
             rejected.extend((agent for agent in ranked[capacity:] if locked[agent] < 0))
         if not rejected:
@@ -368,13 +368,13 @@ def evaluation_resolved_action(model, world, schedule, deterministic=True):
             probabilities[movable] = stats['probs'][0, movable].detach().cpu().numpy()
     changed = world.agent_active & (trace['decision'][0] | (targets != initial))
     schedule.record(world, targets, changed, probabilities)
-    return (strike_action(targets), {'allocation_traces': traces, 'resolver_changed': targets != initial})
+    return (final_mission_action(targets), {'allocation_traces': traces, 'resolver_changed': targets != initial})
 
 def scheduled_action(model, world, schedule, deterministic=True, resolver=False):
     if resolver:
         return evaluation_resolved_action(model, world, schedule, deterministic)
     (action, traces) = allocated_actions(model, [world], [schedule], deterministic)
-    return (strike_action(action['target'][0]), {'allocation_traces': traces})
+    return (final_mission_action(action['target'][0]), {'allocation_traces': traces})
 
 def save_checkpoint(path, model, metadata):
     torch.save({'state_dict': model.state_dict(), 'obs_dim': model.obs_dim, 'n_targets': model.n_targets, 'n_agents': model.n_agents, 'architecture': model.architecture, 'hidden': model.hidden, 'training_settings': getattr(model, 'training_settings', {}), 'metadata': metadata}, Path(path))
@@ -389,7 +389,7 @@ def checkpoint_payload(path):
         torch.serialization.add_safe_globals([TorchVersion])
         payload = torch.load(Path(path), map_location='cpu', weights_only=True)
     # Accept the historical serialized identifier without exposing it as a name.
-    if payload.get('architecture') == 'strike_target_coma_v' + str(15):
+    if payload.get('architecture') == 'final_mission_target_coma_v' + str(15):
         payload['architecture'] = 'target_allocation'
     return payload
 
@@ -397,7 +397,7 @@ def model_from_checkpoint(path, config, device='cpu'):
     payload = checkpoint_payload(path)
     if payload.get('architecture') not in ('target_allocation','target_allocation_temporal'):
         raise ValueError('Target Allocation requires a Target Allocation checkpoint')
-    from .strike_target_actor import TargetAllocationActorCritic
+    from .final_mission_target_actor import TargetAllocationActorCritic
     if payload['architecture']=='target_allocation_temporal':
         from .temporal_critic import TemporalActorCritic
         settings=payload.get('training_settings',{})
@@ -432,10 +432,10 @@ def critic_state(world, one_hot=True):
     c = world.c
     value_scale = max(1.0, 5.0 * c.n_targets)
     mission = np.array([(c.horizon - world.t) / c.horizon, world.formation_one_initial_score / value_scale, world.score / value_scale])
-    participation = world.strike_participants.any(axis=0)
-    drones = np.column_stack((world.pos / c.size, world.agent_active.astype(float), participation.astype(float), world.agent_strike_progress / c.strike_steps_per_life))
+    participation = world.final_mission_participants.any(axis=0)
+    drones = np.column_stack((world.pos / c.size, world.agent_active.astype(float), participation.astype(float), world.agent_final_mission_progress / c.service_steps_per_unit))
     target_type = (world.target_type[:, None] == np.arange(1, 4)).astype(float) * world.target_exists[:, None] if one_hot else world.target_type / 3.0
-    targets = np.column_stack((np.nan_to_num(world.targets, nan=0.0) / c.size, target_type, world.target_life / 2.0))
+    targets = np.column_stack((np.nan_to_num(world.targets, nan=0.0) / c.size, target_type, world.target_work_units / 2.0))
     state = np.concatenate((mission, drones.ravel(), targets.ravel(), world.target_assignment.astype(float).ravel())).astype(np.float32)
     return np.repeat(state[None], world.c.n_agents, axis=0)
 
@@ -618,7 +618,7 @@ def _ppo_update(model, optimizers, batch, epochs, minibatch_size=None):
     return {key: float(np.mean([row[key] for row in records if key in row])) if any((key in row for row in records)) else 0.0 for key in keys}
 
 def _summarize(rows):
-    keys = ('team_return', 'discounted_team_return', 'mission_success', 'score', 'baseline_score', 'destroyed_fraction', 'score_auc', 'steps')
+    keys = ('team_return', 'discounted_team_return', 'mission_success', 'score', 'baseline_score', 'completion_fraction', 'score_auc', 'steps')
     summary = {key: float(np.mean([row[key] for row in rows])) for key in keys}
     for baseline in sorted({int(row['baseline_score']) for row in rows}):
         group = [row for row in rows if int(row['baseline_score']) == baseline]
@@ -627,7 +627,7 @@ def _summarize(rows):
     for (case_index, task) in enumerate(EVALUATION_TASKS, start=1):
         group = [row for row in rows if row.get('evaluation_task') == task]
         if group:
-            task_metrics = {'damage': float(np.mean([row['score'] for row in group])), 'success': float(np.mean([row['mission_success'] for row in group])), 'team_return': float(np.mean([row['team_return'] for row in group])), 'discounted_return': float(np.mean([row['discounted_team_return'] for row in group]))}
+            task_metrics = {'completion_score': float(np.mean([row['score'] for row in group])), 'success': float(np.mean([row['mission_success'] for row in group])), 'team_return': float(np.mean([row['team_return'] for row in group])), 'discounted_return': float(np.mean([row['discounted_team_return'] for row in group]))}
             for (metric, value) in task_metrics.items():
                 summary[f'{metric}_{task}'] = value
                 summary[f'case{case_index}_{metric}'] = value
@@ -637,7 +637,7 @@ def _summarize(rows):
 
 def _suite_checkpoint_key(resolved, unresolved):
     """Maximize the evaluation suite; break ties with unaided policy quality."""
-    return (float(np.mean([resolved[f'case{i}_damage'] for i in (1, 2, 3)])), float(np.mean([unresolved[f'case{i}_damage'] for i in (1, 2, 3)])), resolved['discounted_team_return'])
+    return (float(np.mean([resolved[f'case{i}_completion_score'] for i in (1, 2, 3)])), float(np.mean([unresolved[f'case{i}_completion_score'] for i in (1, 2, 3)])), resolved['discounted_team_return'])
 
 def evaluate_model(model, config, episodes=3, seed=10000, resolver=True, deadline_mask=None):
     """Evaluate the current actor/resolver on held-out scenario seeds.
@@ -698,21 +698,21 @@ def _reset_training_world(world, rng, b12_probability=0.0):
         world.reset(seed)
     return None
 
-def _training_team_reward(world, previous_life, previous_score):
+def _training_team_reward(world, previous_work_units, previous_score):
     """Training target values: type 3/2/1 totals are 1/2/5."""
-    life_lost = np.maximum(np.asarray(previous_life) - world.target_life, 0)
-    value_per_life = np.select([world.target_type == 1, world.target_type == 2, world.target_type == 3], [2.5, 2.0, 1.0], default=0.0)
-    return float(DAMAGE_REWARD_RATE * np.dot(life_lost, value_per_life))
+    work_units_lost = np.maximum(np.asarray(previous_work_units) - world.target_work_units, 0)
+    value_per_work_units = np.select([world.target_type == 1, world.target_type == 2, world.target_type == 3], [2.5, 2.0, 1.0], default=0.0)
+    return float(PROGRESS_REWARD_RATE * np.dot(work_units_lost, value_per_work_units))
 
 def _actor_event(world):
     """Select pre-action states using only information already observed."""
-    finishing = world.agent_active & world.strike_participants.any(axis=0) & (world.agent_strike_progress >= world.c.strike_steps_per_life - 1)
+    finishing = world.agent_active & world.final_mission_participants.any(axis=0) & (world.agent_final_mission_progress >= world.c.service_steps_per_unit - 1)
     return bool(world.t == 0 or world.t == world.c.horizon - 1 or finishing.any())
 
 def train_target_allocation(config, total_agent_transitions, seed=7, rollout_steps=200, epochs=10, minibatch_size=None, learning_rate=0.0005, progress=False, eval_interval=10000, eval_episodes=3, eval_seed=10000, best_path=None, latest_path=None, checkpoint_dir=None, checkpoint_interval=100000, n_envs=32, diagnostics_path=None, algorithm='target_coma', entropy_coef=0.01, policy_clip=0.2, policy_temperature=1.0, actor_samples='all', guided_training=False, coma_advantage='q', critic_epochs=None, critic_minibatch_size=None, best_metric='case1', lookahead_credit=0.0, deadline_mask=False, eval_deadline_mask=False, initial_checkpoint=None, actor_target_distances=False, training_b12_probability=0.0, actor_decision_minibatches=False, target_coma_critic='graph', target_coma_actor='attention', device='auto', start_transitions=0, previous_best_key=None, failure_replay_probability=0.0, failure_pool_size=512):
     from .env import World
-    from .strike_guidance import progress_potential, avoidable_switches
-    from .strike_lookahead import counterfactual_credit
+    from .final_mission_guidance import progress_potential, avoidable_switches
+    from .final_mission_lookahead import counterfactual_credit
     device = resolve_device(device)
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -726,8 +726,8 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         raise ValueError('training_b12_probability must be between zero and one')
     if training_b12_probability and (not _uses_balanced_thresholds(config)):
         raise ValueError('B12 curriculum requires the fixed five-target training distribution')
-    if best_metric not in ('case1', 'suite_damage'):
-        raise ValueError('best_metric must be case1 or suite_damage')
+    if best_metric not in ('case1', 'suite_completion_score'):
+        raise ValueError('best_metric must be case1 or suite_completion_score')
     if not np.isfinite(lookahead_credit) or lookahead_credit < 0:
         raise ValueError('lookahead_credit must be finite and nonnegative')
     if (deadline_mask or eval_deadline_mask) and config.target_motion_scale != 0:
@@ -758,7 +758,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
     for world in worlds:
         if curriculum is None:_reset_training_world(world, rng, training_b12_probability)
         else:curriculum.reset(world,rng)
-    from .strike_target_actor import TargetAllocationActorCritic
+    from .final_mission_target_actor import TargetAllocationActorCritic
     model_class = TargetAllocationActorCritic
     if target_coma_critic=='temporal':
         if guided_training or lookahead_credit or deadline_mask:
@@ -781,7 +781,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
     model.to(device)
     if progress:
         print(f'Training device: {device}', flush=True)
-    model.training_settings = dict(device=str(device), n_envs=n_envs, rollout_steps=rollout_steps, epochs=epochs, minibatch_size=minibatch_size, learning_rate=learning_rate, critic_learning_rate=learning_rate, adam_epsilon=1e-05, hidden=64, initial_checkpoint=str(initial_checkpoint) if initial_checkpoint is not None else None, optimizer_reinitialized=initial_checkpoint is not None, actor_target_distances=actor_target_distances, training_b12_probability=training_b12_probability, activation='relu', feature_normalization=True, orthogonal=True, actor_gain=0.01, value_normalization=True, huber_delta=10.0, value_clipping=0.2, policy_clipping=policy_clip, entropy_coef=entropy_coef, policy_temperature=policy_temperature, target_type_encoding='one_hot', actor_sample_mode=actor_samples, actor_minibatches='decision_rows_only' if actor_decision_minibatches else 'all_rollout_rows', guided_training=guided_training, lookahead_credit=lookahead_credit, deadline_mask=deadline_mask, lookahead_credit_description='auxiliary_counterfactual_assignment_damage_forecast' if lookahead_credit else None, progress_shaping_scale=1.0 if guided_training else 0.0, switch_cost=0.02 if guided_training else 0.0, training_reward='target_value_type3_1_type2_2_type1_5', success_bonus=0.0, damage_reward_rate=DAMAGE_REWARD_RATE, value_loss_coef=1.0, max_grad_norm=5.0, recurrent=False, gamma=config.discount_gamma, gae_lambda=config.gae_lambda, finite_horizon_terminal=True, rollout_execution='synchronous_batched', decision_interval=config.decision_interval, commit_target=config.commit_target, training_distribution='B12_mixture_with_uniform_B_distance_25_58' if training_b12_probability else 'uniform_B_5_8_9_11_12_distance_25_58' if evaluation_task_for_episode(config, 0) is not None else 'uniform_agent_target_counts_random_majority_F1_iid_types' if config.randomize_counts and config.randomize_target_composition else 'random', selection_allocation='direct_joint_action_no_rejection_or_reselection')
+    model.training_settings = dict(device=str(device), n_envs=n_envs, rollout_steps=rollout_steps, epochs=epochs, minibatch_size=minibatch_size, learning_rate=learning_rate, critic_learning_rate=learning_rate, adam_epsilon=1e-05, hidden=64, initial_checkpoint=str(initial_checkpoint) if initial_checkpoint is not None else None, optimizer_reinitialized=initial_checkpoint is not None, actor_target_distances=actor_target_distances, training_b12_probability=training_b12_probability, activation='relu', feature_normalization=True, orthogonal=True, actor_gain=0.01, value_normalization=True, huber_delta=10.0, value_clipping=0.2, policy_clipping=policy_clip, entropy_coef=entropy_coef, policy_temperature=policy_temperature, target_type_encoding='one_hot', actor_sample_mode=actor_samples, actor_minibatches='decision_rows_only' if actor_decision_minibatches else 'all_rollout_rows', guided_training=guided_training, lookahead_credit=lookahead_credit, deadline_mask=deadline_mask, lookahead_credit_description='auxiliary_counterfactual_assignment_completion_score_forecast' if lookahead_credit else None, progress_shaping_scale=1.0 if guided_training else 0.0, switch_cost=0.02 if guided_training else 0.0, training_reward='target_value_type3_1_type2_2_type1_5', success_bonus=0.0, completion_score_reward_rate=PROGRESS_REWARD_RATE, value_loss_coef=1.0, max_grad_norm=5.0, recurrent=False, gamma=config.discount_gamma, gae_lambda=config.gae_lambda, finite_horizon_terminal=True, rollout_execution='synchronous_batched', decision_interval=config.decision_interval, commit_target=config.commit_target, training_distribution='B12_mixture_with_uniform_B_distance_25_58' if training_b12_probability else 'uniform_B_5_8_9_11_12_distance_25_58' if evaluation_task_for_episode(config, 0) is not None else 'uniform_agent_target_counts_random_majority_F1_iid_types' if config.randomize_counts and config.randomize_target_composition else 'random', selection_allocation='direct_joint_action_no_rejection_or_reselection')
     model.training_settings.update(failure_replay_probability=failure_replay_probability,failure_pool_size=failure_pool_size,curriculum='oracle_gap_prioritized_initial_layouts' if curriculum else None)
     model.training_settings['evaluation_allocation'] = 'actor_score_priority_rejection_reselection'
     model.training_settings['evaluation_modes'] = ['no_resolver', 'resolver']
@@ -789,7 +789,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
     model.training_settings['best_evaluation_mode'] = 'resolver'
     model.training_settings['best_metric'] = best_metric
     if getattr(model, 'drone_velocity', False):
-        model.training_settings.update(actor_drone_velocity='self_and_peers_world_vx_vy_over_strike_speed', critic_drone_velocity='all_drones_world_vx_vy_over_strike_speed')
+        model.training_settings.update(actor_drone_velocity='self_and_peers_world_vx_vy_over_final_mission_speed', critic_drone_velocity='all_drones_world_vx_vy_over_final_mission_speed')
     model.training_settings.update(actor_coordinates='self_relative', critic_coordinates='absolute', previous_joint_action='softmax_probabilities')
     model.training_settings['actor_architecture'] = 'shared_target_scorer_with_teammates'
     model.training_settings.update(actor_architecture='own_target_query_peer_cross_attention', actor_slot_independent_weights=True, actor_attention='unnormalized_sigmoid_positive_messages', actor_activation='silu', actor_feature_normalization=False, actor_body_initialization='pytorch_default', actor_heads=4, actor_layers=2, actor_relation_inputs='previous_probabilities_and_choices_only')
@@ -811,10 +811,10 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             model.training_settings['actor_advantage'] = 'sampled_return-sum_a_i pi_old(a_i|o_i)Q(s,(a_-i,a_i))'
         if lookahead_credit:
             model.training_settings['algorithm'] = 'model_assisted_counterfactual_ppo'
-            model.training_settings['actor_advantage'] += f'+{lookahead_credit:g}*counterfactual_assignment_damage_forecast'
+            model.training_settings['actor_advantage'] += f'+{lookahead_credit:g}*counterfactual_assignment_completion_score_forecast'
     model.training_settings['critic_type_self_attention'] = model.q_body.drone_self is not None
     if target_coma_critic=='temporal':
-        model.training_settings.update(critic='target_completion_time_distribution',temporal_horizon=config.horizon,temporal_gamma=config.discount_gamma,q_target='observed_completion_paths_with_censoring',temporal_life_cap=2,critic_team_input='sum_expected_target_rewards_before_deadline',critic_loss='completion_path_negative_log_likelihood',huber_delta=None)
+        model.training_settings.update(critic='target_completion_time_distribution',temporal_horizon=config.horizon,temporal_gamma=config.discount_gamma,q_target='observed_completion_paths_with_censoring',temporal_work_units_cap=2,critic_team_input='sum_expected_target_rewards_before_deadline',critic_loss='completion_path_negative_log_likelihood',huber_delta=None)
     optimizers = _optimizers(model, learning_rate)
     (completed, episode_rows, evaluation_rows) = (start_transitions, [], [])
     end_transitions = start_transitions + total_agent_transitions
@@ -838,12 +838,12 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         policy_success = task_evaluation['mission_success']
         policy_return = task_evaluation['team_return']
         policy_discounted_return = task_evaluation['discounted_team_return']
-        if best_metric == 'suite_damage' and 'case1_damage' in task_evaluation:
+        if best_metric == 'suite_completion_score' and 'case1_completion_score' in task_evaluation:
             candidate_key = _suite_checkpoint_key(task_evaluation, evaluations[f'{algorithm}_no_resolver'])
-            best_metadata = {'best_metric': 'mean_case_damage_then_no_resolver_damage_then_discounted_return', 'best_case_damage': [task_evaluation[f'case{i}_damage'] for i in (1, 2, 3)], 'best_mean_damage': candidate_key[0], 'best_mean_no_resolver_damage': candidate_key[1]}
-        elif 'case1_damage' in task_evaluation:
-            candidate_key = (task_evaluation['case1_damage'], task_evaluation['case1_discounted_return'])
-            best_metadata = {'best_metric': 'case1_damage_then_case1_discounted_return', 'best_case1_damage': task_evaluation['case1_damage'], 'best_case1_success': task_evaluation['case1_success'], 'best_case1_team_return': task_evaluation['case1_team_return'], 'best_case1_discounted_return': task_evaluation['case1_discounted_return']}
+            best_metadata = {'best_metric': 'mean_case_completion_score_then_no_resolver_completion_score_then_discounted_return', 'best_case_completion_score': [task_evaluation[f'case{i}_completion_score'] for i in (1, 2, 3)], 'best_mean_completion_score': candidate_key[0], 'best_mean_no_resolver_completion_score': candidate_key[1]}
+        elif 'case1_completion_score' in task_evaluation:
+            candidate_key = (task_evaluation['case1_completion_score'], task_evaluation['case1_discounted_return'])
+            best_metadata = {'best_metric': 'case1_completion_score_then_case1_discounted_return', 'best_case1_completion_score': task_evaluation['case1_completion_score'], 'best_case1_success': task_evaluation['case1_success'], 'best_case1_team_return': task_evaluation['case1_team_return'], 'best_case1_discounted_return': task_evaluation['case1_discounted_return']}
         elif config.randomize_target_composition:
             candidate_key = (policy_return, policy_discounted_return)
             best_metadata = {'best_metric': 'mean_team_return_then_discounted_return', 'best_value': policy_return, 'best_discounted_value': policy_discounted_return, 'best_success': policy_success}
@@ -853,20 +853,20 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         if best_path is not None and candidate_key > best_key:
             best_key = candidate_key
             save_checkpoint(best_path, model, dict(best_metadata, **{'agent_transitions': agent_transitions, 'eval_episodes': eval_episodes, 'eval_seed': eval_seed, 'evaluation_allocation': 'actor_score_priority_rejection_reselection'}))
-            if best_metric == 'suite_damage' and 'case1_damage' in task_evaluation:
+            if best_metric == 'suite_completion_score' and 'case1_completion_score' in task_evaluation:
                 progress_bar.write(f'Saved best checkpoint: {best_path} (mean_case_D={candidate_key[0]:.3f})')
-            elif 'case1_damage' in task_evaluation:
-                progress_bar.write(f"Saved best checkpoint: {best_path} (case1_D={task_evaluation['case1_damage']:.3f}, case1_discounted_return={task_evaluation['case1_discounted_return']:.3f})")
+            elif 'case1_completion_score' in task_evaluation:
+                progress_bar.write(f"Saved best checkpoint: {best_path} (case1_score={task_evaluation['case1_completion_score']:.3f}, case1_discounted_return={task_evaluation['case1_discounted_return']:.3f})")
             elif config.randomize_target_composition:
                 progress_bar.write(f'Saved best checkpoint: {best_path} (return={policy_return:.3f}, discounted_return={policy_discounted_return:.3f})')
             else:
                 progress_bar.write(f'Saved best checkpoint: {best_path} (success={policy_success:.3f}, undiscounted_return={policy_return:.3f}, discounted_return={policy_discounted_return:.3f})')
         for (policy_name, evaluation) in evaluations.items():
             evaluation_rows.append(dict(agent_transitions=agent_transitions, policy=policy_name, episodes=eval_episodes, seed=eval_seed, **evaluation))
-            damage_by_task = ' '.join((f"case{index}={evaluation['damage_' + task]:.3f}" for (index, task) in enumerate(EVALUATION_TASKS, start=1) if 'damage_' + task in evaluation))
-            damage_display = f'D_by_case=[{damage_by_task}]' if damage_by_task else f"D={evaluation['score']:.3f}"
+            score_by_task = ' '.join((f"case{index}={evaluation['completion_score_' + task]:.3f}" for (index, task) in enumerate(EVALUATION_TASKS, start=1) if 'completion_score_' + task in evaluation))
+            score_display = f'D_by_case=[{score_by_task}]' if score_by_task else f"D={evaluation['score']:.3f}"
             case_one_display = f" case1_return={evaluation['case1_team_return']:.3f} case1_success={evaluation['case1_success']:.3f}" if 'case1_team_return' in evaluation else ''
-            progress_bar.write(f"Eval @ {agent_transitions:,} [{policy_name}]: {damage_display} discounted_return={evaluation['discounted_team_return']:.3f}{case_one_display}")
+            progress_bar.write(f"Eval @ {agent_transitions:,} [{policy_name}]: {score_display} discounted_return={evaluation['discounted_team_return']:.3f}{case_one_display}")
         if checkpoint_dir is not None:
             # Preserve each completed evaluation while a long training run is active.
             fields=list(dict.fromkeys(key for row in evaluation_rows for key in row))
@@ -879,7 +879,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         (observations, states, targets, logps, action_masks, values) = ([] for _ in range(6))
         (next_values, rewards, dones, active, decisions) = ([] for _ in range(5))
         allocation_records = []
-        temporal_damage=[]
+        temporal_progress=[]
         lookahead_advantages = []
         (shaping_total, switch_total) = (0.0, 0)
         collected = 0
@@ -901,13 +901,13 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
                 lookahead_advantages.append(np.stack([counterfactual_credit(world, action['target'][index], traces[0]['probs'][index]) for (index, world) in enumerate(worlds)]))
             active_before = np.stack([world.agent_active.copy() for world in worlds])
             (step_rewards, step_dones, completed_episodes) = ([], [], [])
-            damage_step=[]
+            progress_step=[]
             for (env_index, world) in enumerate(worlds):
                 potential = progress_potential(world) if guided_training else 0.0
                 switches = avoidable_switches(world, action['target'][env_index]) if guided_training else 0
-                life_before=world.target_life.copy() if target_coma_critic=='temporal' else None
-                (_, reward, terminated, truncated, metrics) = world.step(strike_action(action['target'][env_index]))
-                if life_before is not None:damage_step.append(life_before-world.target_life)
+                work_units_before=world.target_work_units.copy() if target_coma_critic=='temporal' else None
+                (_, reward, terminated, truncated, metrics) = world.step(final_mission_action(action['target'][env_index]))
+                if work_units_before is not None:progress_step.append(work_units_before-world.target_work_units)
                 shaping = config.discount_gamma * progress_potential(world) - potential if guided_training else 0.0
                 step_rewards.append(float(np.sum(reward)) + shaping - 0.02 * switches)
                 shaping_total += shaping
@@ -918,7 +918,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
             with torch.no_grad():
                 next_state = np.stack([_model_critic_state(model, world, schedule) for (world, schedule) in zip(worlds, schedules)])
                 next_value = torch.zeros(n_envs, device=device) if isinstance(model, _TargetQBase) else model.values(model_tensor(model, next_state, dtype=torch.float32))
-            if target_coma_critic=='temporal':temporal_damage.append(damage_step)
+            if target_coma_critic=='temporal':temporal_progress.append(progress_step)
             states.append(state)
             values.append(value.detach().cpu().numpy())
             next_values.append(next_value.detach().cpu().numpy())
@@ -962,7 +962,7 @@ def train_target_allocation(config, total_agent_transitions, seed=7, rollout_ste
         tensors = _batch(observations, states, targets, logps, action_masks, actor_advantages, team_returns, actor_active, decisions, values_array, critic_active=np.asarray(active).any(axis=-1))
         if target_coma_critic=='temporal':
             from .temporal_critic import trajectory_labels
-            tensors.update({k:torch.as_tensor(v) for k,v in trajectory_labels(temporal_damage,dones,config.horizon).items()})
+            tensors.update({k:torch.as_tensor(v) for k,v in trajectory_labels(temporal_progress,dones,config.horizon).items()})
         if lookahead_credit:
             tensors['lookahead_advantage'] = torch.as_tensor(np.asarray(lookahead_advantages).reshape(-1), dtype=torch.float32)
         tensors = {key: value.to(device) for (key, value) in tensors.items()}

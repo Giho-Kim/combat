@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Drone rescue simulation. Allocation targets are sites requiring rescue assistance.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Usage: bash scripts/train_target_allocation_eval_time_mask.sh [basic|model_based] [steps] [out]

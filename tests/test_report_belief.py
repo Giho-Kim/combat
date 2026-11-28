@@ -10,7 +10,7 @@ import torch
 from pointmass_rl.belief_env import BeliefWorld, TargetBelief
 from pointmass_rl.belief_policy import BeliefActorCritic, choose_action, stack_observations
 from pointmass_rl.belief_training import load_belief_checkpoint, save_belief_checkpoint, train_belief
-from pointmass_rl.env import Config, strike_action
+from pointmass_rl.env import Config, final_mission_action
 
 
 class ReportBeliefTests(unittest.TestCase):
@@ -34,16 +34,16 @@ class ReportBeliefTests(unittest.TestCase):
             old, new = BeliefWorld(replace(c,belief_initial_intel=False)), BeliefWorld(c)
             old.reset(seed)
             new.reset(seed)
-            w, report = new._world, new.belief.initial_intel
+            w, report = new._world, new.belief.initial_report
             np.testing.assert_equal(report['position'],old._world.formation_centers[0])
-            np.testing.assert_equal(w.friendly_center,old._world.friendly_center)
+            np.testing.assert_equal(w.agent_start_center,old._world.agent_start_center)
             second = w.target_exists & (w.target_formation == 1)
             first = w.target_exists & (w.target_formation == 0)
             np.testing.assert_equal(w.targets[second],old._world.targets[second])
             np.testing.assert_equal(report['type_counts'],np.bincount(w.target_type[first],minlength=4)[1:])
             offset = np.linalg.norm(w.formation_centers[0]-report['position'])
             offsets.append(offset)
-            scales.append(w._intel_true_sigma)
+            scales.append(w._report_true_sigma)
             self.assertTrue((w.targets[w.target_exists] >= c.belief_search_margin).all())
             self.assertTrue((w.targets[w.target_exists] <= c.size-c.belief_search_margin).all())
             self.assertEqual(set(report),{'position','type_counts','sigma_hint','log_sigma_std','member_radius'})
@@ -143,11 +143,11 @@ class ReportBeliefTests(unittest.TestCase):
         self.assertEqual(len(w.belief.tracks),0)
         reference = deepcopy(w)
         corners = np.array([[10,10],[10,90],[90,10],[90,90]])
-        far = corners[np.argmax(np.linalg.norm(corners-w._world.friendly_center,axis=1))]
+        far = corners[np.argmax(np.linalg.norm(corners-w._world.agent_start_center,axis=1))]
         w._world.targets[:] = far
         w._world.target_type[:] = 3
-        w._world.target_life[:] = 1
-        w._world._intel_true_sigma *= 10
+        w._world.target_work_units[:] = 1
+        w._world._report_true_sigma *= 10
         w._sense()
         reference._sense()
         obs = reference.observation()
@@ -197,7 +197,7 @@ class ReportBeliefTests(unittest.TestCase):
         for _ in range(30):
             if b.weights[slot,index] == 0:
                 break
-            w.step(strike_action(np.array([slot])))
+            w.step(final_mission_action(np.array([slot])))
         self.assertEqual(b.weights[slot,index],0.)
 
     def test_unreported_type_does_not_consume_reported_roster(self):
@@ -238,7 +238,7 @@ class ReportBeliefTests(unittest.TestCase):
             obs = w.reset(10000)
             while not w.done:
                 action,prob = choose_action(loaded,obs,True,'score')
-                obs,*_ = w.step(strike_action(action),prob)
+                obs,*_ = w.step(final_mission_action(action),prob)
 
 
 if __name__ == '__main__':

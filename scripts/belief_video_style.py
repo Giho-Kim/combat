@@ -43,11 +43,11 @@ def render_frame(a,b,index,config):
                 d.line((x-11,y,x+11,y),fill=color,width=width)
                 d.line((x,y-11,x,y+11),fill=color,width=width)
             d.ellipse((x-2,y-2,x+2,y+2),fill='#f7eaff')
-        tracks={tuple(np.round(t['position'],4)):t for t in f['tracks'] if t['life']>0}
+        tracks={tuple(np.round(t['position'],4)):t for t in f['tracks'] if t['work_units']>0}
         occupied=[]
-        upper_type2=max((t['position'][1] for t in f['truth'] if t['type']==2 and t['life']>0),default=None)
+        upper_type2=max((t['position'][1] for t in f['truth'] if t['type']==2 and t['work_units']>0),default=None)
         for t in f['truth']:
-            if t['life']<=0:continue
+            if t['work_units']<=0:continue
             x,y=xy(t['position']);detected=tuple(np.round(t['position'],4)) in tracks
             color='#ffd16e' if detected else '#e49bbd';r=5
             if detected:d.ellipse((x-r,y-r,x+r,y+r),fill=color,outline='#fff0c6',width=1)

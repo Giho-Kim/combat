@@ -41,9 +41,9 @@ class ScriptedOptions:
         return obs
 
     def step(self, action, probabilities):
-        # strike_action contains navigation setpoints too; its first column is the slot.
-        from pointmass_rl.env import split_strike_action
-        self.chosen = split_strike_action(action)
+        # final_mission_action contains navigation setpoints too; its first column is the slot.
+        from pointmass_rl.env import split_final_mission_action
+        self.chosen = split_final_mission_action(action)
         self.t += 1
         reward = 7. if self.t == 100 else 2. if self.t == 130 else 0.
         done = self.t == 130
@@ -115,7 +115,7 @@ class ExplorationPPOTests(unittest.TestCase):
             self.assertEqual(best['metadata']['best_policy'], 'score_time_limit')
             loaded, restored_config, payload = load_belief_checkpoint(Path(directory)/'exploration_ppo.pt')
             self.assertEqual(restored_config, config)
-            self.assertEqual(payload['architecture'], 'polygon_exploration_decision_ppo')
+            self.assertEqual(payload['architecture'], 'polygon_exploration_decision_ppo_absolute')
             self.assertIn('Monte Carlo', payload['training_settings']['update'])
             obs = PolygonExplorationWorld(config).reset(7)
             batch = stack_observations([obs])

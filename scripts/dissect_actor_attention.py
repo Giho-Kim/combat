@@ -1,4 +1,4 @@
-"""Inspect a saved Target Allocation actor using messages and interventions."""
+"""Inspect how a saved actor assigns drones to rescue sites."""
 import argparse
 import csv
 import hashlib
@@ -13,7 +13,7 @@ import torch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config, World
-from pointmass_rl.strike_ppo import (DecisionSchedule,_model_observation,
+from pointmass_rl.final_mission_ppo import (DecisionSchedule,_model_observation,
     model_from_checkpoint,scheduled_action)
 
 
@@ -77,15 +77,15 @@ def extract(model,world,schedule):
 def collect(model,config,seeds,out):
     pool=[];trajectories=[]
     for seed in seeds:
-        w=World(config);w.reset(seed);s=DecisionSchedule(config);life=w.target_life.copy()
+        w=World(config);w.reset(seed);s=DecisionSchedule(config);work_units=w.target_work_units.copy()
         while not w.done:
             available=model.available_actions(w);_,free=s.mask(w,available)
-            after_consumption=bool(np.any(life!=w.target_life))
-            take=w.t in (0,1,5,10,20,40,60,80) or after_consumption
+            after_work_progress=bool(np.any(work_units!=w.target_work_units))
+            take=w.t in (0,1,5,10,20,40,60,80) or after_work_progress
             if take:q,p,mask,logits=extract(model,w,s)
             action,_=scheduled_action(model,w,s,resolver=True)
             if take:
-                stage='initial' if w.t==0 else 'after_consumption' if after_consumption else 'negotiation' if w.t<=10 else 'travel'
+                stage='initial' if w.t==0 else 'after_work_progress' if after_work_progress else 'negotiation' if w.t<=10 else 'travel'
                 for i in np.flatnonzero(w.agent_active & free & (available.sum(-1)>1)):
                     choice=int(np.where(available[i],logits[i],-np.inf).argmax())
                     nearest=int(np.where(available[i],np.linalg.norm(w.targets-w.pos[i],axis=-1),np.inf).argmin())
@@ -94,16 +94,16 @@ def collect(model,config,seeds,out):
                             executed_choice=int(action['target'][i]),nearest=nearest,
                             own_position=(w.pos[i]/config.size).tolist(),positions=(w.pos/config.size).tolist(),
                             targets=(w.targets/config.size).tolist(),active=w.agent_active.tolist(),
-                            types=w.target_type.tolist(),life=w.target_life.tolist(),
+                            types=w.target_type.tolist(),work_units=w.target_work_units.tolist(),
                             previous_choices=s.targets.tolist())))
                 trajectories.append(dict(seed=seed,step=int(w.t),score=float(w.score),
                     pos=(w.pos/config.size).tolist(),targets=(w.targets/config.size).tolist(),
-                    active=w.agent_active.tolist(),types=w.target_type.tolist(),life=w.target_life.tolist(),
+                    active=w.agent_active.tolist(),types=w.target_type.tolist(),work_units=w.target_work_units.tolist(),
                     selected=action['target'].tolist()))
-            life=w.target_life.copy();w.step(action)
+            work_units=w.target_work_units.copy();w.step(action)
         print('Collected seed',seed,'return',float(w.score),flush=True)
     rng=np.random.default_rng(7);selected=[]
-    for stage in ('initial','negotiation','travel','after_consumption'):
+    for stage in ('initial','negotiation','travel','after_work_progress'):
         candidates=[r for r in pool if r['meta']['stage']==stage]
         indices=rng.choice(len(candidates),min(160,len(candidates)),replace=False)
         selected.extend(candidates[i] for i in indices)
@@ -142,7 +142,7 @@ def feature_and_head_tests(model,inspector,data,contexts,out):
         **{f'layer_{i}_gate':gate_arrays[i] for i in range(2)},
         **{f'layer_{i}_strength':strength_arrays[i] for i in range(2)})
     rows=[];head_rows=[];changed_logits={}
-    features=['target_position','target_type','target_life','time','own_previous_probability',
+    features=['target_position','target_type','target_work_units','time','own_previous_probability',
         'own_previous_choice','own_velocity','peer_previous_intent','peer_position',
         'peer_velocity','peer_idle','peer_records_initial','peer_records_mean',
         'all_peer_messages','layer_1_messages','layer_2_messages']
@@ -153,7 +153,7 @@ def feature_and_head_tests(model,inspector,data,contexts,out):
             a=q[start:start+32].copy();b=p[start:start+32].copy();m=mask[start:start+32].copy()
             if feature=='target_position':a[...,:2]=0
             elif feature=='target_type':a[...,2:5]=1/3
-            elif feature=='target_life':a[...,5]=.5
+            elif feature=='target_work_units':a[...,5]=.5
             elif feature=='time':a[...,6]=1
             elif feature=='own_previous_probability':a[...,7]=1/a.shape[1]
             elif feature=='own_previous_choice':a[...,8]=0
@@ -175,7 +175,7 @@ def feature_and_head_tests(model,inspector,data,contexts,out):
             changed.extend(scores(model,a,b,m))
         changed=np.array(changed);changed_logits[feature]=changed;prob=probabilities(changed,available)
         flip=np.argmax(prob,-1)!=choice
-        for stage in ['all','initial','negotiation','travel','after_consumption']:
+        for stage in ['all','initial','negotiation','travel','after_work_progress']:
             selected=np.ones(len(q),dtype=bool) if stage=='all' else np.array([c['stage']==stage for c in contexts])
             if not selected.any():continue
             kl=(base_prob*(np.log(np.maximum(base_prob,1e-30))-np.log(np.maximum(prob,1e-30)))).sum(-1)
@@ -233,7 +233,7 @@ def controlled_tests(model,data,contexts,base,out):
             for n,label in enumerate(names):
                 row=dict(context=int(index),seed=contexts[index]['seed'],step=contexts[index]['step'],
                     stage=contexts[index]['stage'],agent=contexts[index]['agent'],target=int(k),
-                    type=contexts[index]['types'][k],life=contexts[index]['life'][k],intervention=label,
+                    type=contexts[index]['types'][k],work_units=contexts[index]['work_units'][k],intervention=label,
                     probability=float(probs[n,k]),score_gap=float(logits[n,k]-np.mean(logits[n,legal[legal!=k]])),
                     selected=int(np.argmax(probs[n])),peer=-1 if peer is None else peer)
                 if peer is None:row['peer_closer']=False

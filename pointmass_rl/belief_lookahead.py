@@ -27,7 +27,7 @@ class BeliefLookahead:
         """Estimate no-detection probabilities along the controller's route."""
         c = self.c
         stride = 6
-        step_distance = c.strike_speed*c.dt
+        step_distance = c.final_mission_speed*c.dt
         position = position.copy()
         waypoints = self.world._waypoints(slot, position)
         index, path, elapsed = 0, None, 0

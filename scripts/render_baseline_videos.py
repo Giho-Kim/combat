@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from pointmass_rl.env import Config, EVALUATION_TASKS, World, strike_action
+from pointmass_rl.env import Config, EVALUATION_TASKS, World, final_mission_action
 from pointmass_rl.cli import make_policy
 
 
@@ -47,10 +47,10 @@ def staged_reveal_action(policy, obs, world, seen, pending, activated):
     """Keep the policy's original F2 target, but approach F1 until reveal."""
     original = policy.predict(obs)['target']
     targets = original.copy()
-    formation_one = np.flatnonzero((world.target_formation == 0) & (world.target_life > 0))
+    formation_one = np.flatnonzero((world.target_formation == 0) & (world.target_work_units > 0))
     for agent in np.flatnonzero(world.agent_active):
         if activated[agent] >= 0:
-            if world.target_life[activated[agent]] > 0:
+            if world.target_work_units[activated[agent]] > 0:
                 targets[agent] = activated[agent]
                 continue
             activated[agent] = -1
@@ -72,7 +72,7 @@ def staged_reveal_action(policy, obs, world, seen, pending, activated):
             targets[agent] = int(np.flatnonzero(world.target_formation == 0)[0])
     if np.any(world.agent_active & (world.target_formation[targets] == 1) & ~seen[targets]):
         raise AssertionError('A drone selected formation 2 before discovery')
-    return strike_action(targets)
+    return final_mission_action(targets)
 
 
 def main():
@@ -167,10 +167,10 @@ def main():
                     if state['agent_active'][agent]:
                         map_draw.polygon([(x, y-7), (x-5, y+6), (x+5, y+6)], fill=colors[agent])
                         map_label((x+8, y-15), f'D{agent+1}', 12, colors[agent])
-                        progress = state['agent_strike_progress'][agent]
+                        progress = state['agent_final_mission_progress'][agent]
                         if progress:
                             map_draw.arc((x-12, y-12, x+12, y+12), -90,
-                                         -90 + 360*progress/c.strike_steps_per_life,
+                                         -90 + 360*progress/c.service_steps_per_unit,
                                          fill=colors[agent], width=3)
                     else:
                         map_draw.line((x-4,y-4,x+4,y+4), fill=colors[agent], width=2)
@@ -179,26 +179,26 @@ def main():
                     if not visible[j]:
                         continue
                     x, y = xy(w.targets[j])
-                    dead = state['destroyed'][j]
-                    color = '#596576' if dead else target_colors[int(w.target_type[j])]
+                    completed = state['target_completed'][j]
+                    color = '#596576' if completed else target_colors[int(w.target_type[j])]
                     map_draw.ellipse((x-9,y-9,x+9,y+9), fill='#101924', outline=color, width=3)
                     map_label((x+12,y-13), f'T{j+1}', 15, color)
-                    map_label((x+12,y+2), f'F{w.target_formation[j]+1}  life {state["target_life"][j]}', 12, color)
+                    map_label((x+12,y+2), f'F{w.target_formation[j]+1}  work_units {state["target_work_units"][j]}', 12, color)
                     if j in discoveries and 0 <= step-discoveries[j] < 5:
                         map_draw.ellipse((x-18,y-18,x+18,y+18), outline='#69ddff', width=2)
                 map_box = tuple(value * render_scale for value in (30, 90, 610, 670))
                 im.paste(map_image.crop(map_box), map_box[:2])
                 d.rectangle((30, 90, 610, 670), outline='#354557', width=2)
                 label((640, 110), f'TIME   {step:03d} / 100 s', 19)
-                label((640, 150), f'DAMAGE   {state["metrics"]["score"]:.1f}', 26)
+                label((640, 150), f'SCORE   {state["metrics"]["score"]:.1f}', 26)
                 label((640, 190), f'B = {w.formation_one_initial_score}', 19)
                 label((640, 224), 'SUCCESS' if state['metrics']['mission_success'] else 'IN PROGRESS' if step<100 else 'TIME LIMIT',
                       19, '#5ce1ae' if state['metrics']['mission_success'] else '#ffcc66')
                 label((640, 280), 'DRONE STATUS', 19)
                 for i in range(c.n_agents):
-                    parts = np.flatnonzero(np.array(state['strike_participants'])[:,i])
+                    parts = np.flatnonzero(np.array(state['final_mission_participants'])[:,i])
                     assigned = np.flatnonzero(np.array(state['target_assignment'])[:,i])
-                    status = 'expended' if not state['agent_active'][i] else (
+                    status = 'inactive' if not state['agent_active'][i] else (
                         f'striking T{parts[0]+1}' if len(parts) else
                         f'approaching T{assigned[0]+1}' if len(assigned) else 'selecting')
                     # Avoid disclosing hidden formation targets in the HUD.
@@ -226,7 +226,7 @@ def main():
             if render_path != path:
                 render_path.replace(path)
             row = dict(case=case, policy=title, seed=seed, video=str(path),
-                       damage=w.score, discoveries=discoveries, metrics=w.metrics())
+                       completion_score=w.score, discoveries=discoveries, metrics=w.metrics())
             rows.append(row)
             print(json.dumps(row), flush=True)
     (out / 'manifest.json').write_text(json.dumps(dict(

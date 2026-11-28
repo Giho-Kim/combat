@@ -13,7 +13,7 @@ from pointmass_rl.belief_env import BeliefWorld, TargetBelief
 from pointmass_rl.belief_policy import BeliefActorCritic, choose_action, stack_observations
 from pointmass_rl.belief_training import command_evaluate, load_belief_checkpoint, train_belief, update_model
 from pointmass_rl.cli import command_config
-from pointmass_rl.env import Config, World, strike_action
+from pointmass_rl.env import Config, World, final_mission_action
 
 
 class BeliefTests(unittest.TestCase):
@@ -60,7 +60,7 @@ class BeliefTests(unittest.TestCase):
         first = w.observation()
         w._world.targets[:] = 90
         w._world.target_type[:] = 1
-        w._world.target_life[:] = 2
+        w._world.target_work_units[:] = 2
         w._sense()
         second = w.observation()
         self.assertEqual(len(w.belief.tracks), 0)
@@ -88,17 +88,17 @@ class BeliefTests(unittest.TestCase):
         for seed in range(30):
             world = BeliefWorld(c)
             world.reset(seed)
-            friendly = world._world.friendly_center
+            agent_start_center = world._world.agent_start_center
             first, second = world._world.formation_centers
-            route = first-friendly
+            route = first-agent_start_center
             distance = np.linalg.norm(route)
             along = route/distance
             lateral = np.array([-along[1],along[0]])
             self.assertGreaterEqual(distance,60)
             self.assertLessEqual(distance,80)
-            self.assertAlmostEqual(float(np.dot(second-friendly,along)),.6*distance)
-            self.assertAlmostEqual(abs(float(np.dot(second-friendly,lateral))),22)
-            self.assertGreater(np.linalg.norm(second-friendly),40)
+            self.assertAlmostEqual(float(np.dot(second-agent_start_center,along)),.6*distance)
+            self.assertAlmostEqual(abs(float(np.dot(second-agent_start_center,lateral))),22)
+            self.assertGreater(np.linalg.norm(second-agent_start_center),40)
             self.assertGreater(np.linalg.norm(first-second),30)
             centers.append(first)
         self.assertGreater(np.ptp(np.asarray(centers),axis=0).min(),30)
@@ -111,23 +111,23 @@ class BeliefTests(unittest.TestCase):
         w._world.targets[:] = w.belief.goals[j]
         # No identified track exists before this step, even at the same point.
         self.assertEqual(len(w.belief.tracks), 0)
-        _, reward, _, _, _ = w.step(strike_action(np.full(w.n, j)))
+        _, reward, _, _, _ = w.step(final_mission_action(np.full(w.n, j)))
         self.assertEqual(reward, 0)
-        self.assertFalse(w._world.strike_participants.any())
+        self.assertFalse(w._world.final_mission_participants.any())
 
     def test_task_completion_report_without_surviving_observer(self):
         c = self.config(n_agents=1, min_agents=1, sensor_range=200,
-                        sensor_fov_deg=360, position_noise=0, strike_steps_per_life=1)
+                        sensor_fov_deg=360, position_noise=0, service_steps_per_unit=1)
         w = BeliefWorld(c)
         w.reset(4)
-        i = next(i for i, track in enumerate(w.belief.tracks) if track['life'] == 1)
+        i = next(i for i, track in enumerate(w.belief.tracks) if track['work_units'] == 1)
         j = w.belief.cells+i
         w._world.pos[0] = w.belief.goals[j]
-        obs, reward, _, _, _ = w.step(strike_action(np.array([j])))
+        obs, reward, _, _, _ = w.step(final_mission_action(np.array([j])))
         self.assertGreater(reward, 0)
         self.assertFalse(obs['active'].any())
         self.assertFalse(obs['valid'][j])
-        self.assertEqual(w.belief.tracks[i]['life'], 0)
+        self.assertEqual(w.belief.tracks[i]['work_units'], 0)
         self.assertTrue(obs['mask'].any(-1).all())
 
     def test_shared_encoder_receives_actor_and_q_gradients(self):
@@ -191,7 +191,7 @@ class BeliefTests(unittest.TestCase):
         self.assertEqual(command_config(args).mode, 'belief')
         self.assertEqual(command_config(args).n_agents, 5)
 
-    def test_empty_belief_and_dead_agents_remain_finite(self):
+    def test_empty_belief_and_inactive_agents_remain_finite(self):
         w = BeliefWorld(self.config())
         w.reset(7)
         w.belief.weights.fill(0)
@@ -244,7 +244,7 @@ class BeliefTests(unittest.TestCase):
         obs = w.reset(7)
         m = BeliefActorCritic()
         action, prob = choose_action(m, obs)
-        obs, *_ = w.step(strike_action(action), prob)
+        obs, *_ = w.step(final_mission_action(action), prob)
         held = obs['active'] & obs['valid'][action]
         self.assertFalse(obs['decision'][held].any())
         for i in np.flatnonzero(held):
@@ -267,7 +267,7 @@ class BeliefTests(unittest.TestCase):
             other = BeliefWorld(replace(c, n_agents=2, min_agents=2, n_targets=7, min_targets=7))
             obs = other.reset(17)
             action, prob = choose_action(loaded, obs)
-            other.step(strike_action(action), prob)
+            other.step(final_mission_action(action), prob)
             evaluation = Path(directory)/'eval'
             command_evaluate(argparse.Namespace(model=str(Path(directory)/'latest.pt'),
                 episodes=2, seed=30, out=str(evaluation)), c)

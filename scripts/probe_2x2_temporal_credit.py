@@ -5,7 +5,7 @@ from dataclasses import replace
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import train_target_allocation,evaluate_model,save_checkpoint,model_from_checkpoint,checkpoint_payload
+from pointmass_rl.final_mission_ppo import train_target_allocation,evaluate_model,save_checkpoint,model_from_checkpoint,checkpoint_payload
 import pointmass_rl.graph_critic as graph
 root=Path('runs/critic_2x2_temporal_credit');root.mkdir(exist_ok=True)
 c=replace(Config.load('configs/target_allocation_variable.json'),n_agents=2,min_agents=2,n_targets=2,min_targets=2,randomize_counts=False,randomize_target_composition=False)
@@ -20,14 +20,14 @@ def reset_probe(self,*args,**kwargs):
   self.pos[:]=np.array([[10,49],[10,51]]) if deadline else np.array([[10,50],[20,50]])
   self.targets[:]=np.array([[60,50],[20,50]]) if deadline else np.array([[15,50],[55,50]])
   self.pos+=self.rng.uniform(-2,2,(2,2));self.targets+=self.rng.uniform(-2,2,(2,2))
-  self.target_type[:]=[1,2];self.target_life[:]=[1,1]
+  self.target_type[:]=[1,2];self.target_work_units[:]=[1,1]
   if self.rng.random()<.5:self.pos[:]=self.pos[::-1].copy()
   if self.rng.random()<.5:
-   self.targets[:]=self.targets[::-1].copy();self.target_type[:]=self.target_type[::-1].copy();self.target_life[:]=self.target_life[::-1].copy()
-  self.mem_type[:]=self.target_type;self.mem_life[:]=self.target_life
+   self.targets[:]=self.targets[::-1].copy();self.target_type[:]=self.target_type[::-1].copy();self.target_work_units[:]=self.target_work_units[::-1].copy()
+  self.mem_type[:]=self.target_type;self.mem_work_units[:]=self.target_work_units
  return result
 World.reset=reset_probe
-import pointmass_rl.strike_ppo as trainer
+import pointmass_rl.final_mission_ppo as trainer
 original_returns=trainer._td_lambda_returns
 def complete_returns(rewards,next_q,done,gamma,trace_lambda):
  return original_returns(rewards,next_q,done,gamma,1.0)

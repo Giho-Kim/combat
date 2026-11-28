@@ -37,6 +37,7 @@ class LocalBackground:
         self.neighbours[distance > (3*self.sigma)**2] = 0
         np.fill_diagonal(self.neighbours, 0)
         self.measure = measure.ravel()
+        self._region_projection = None
 
     def partition(self, points):
         delta = points[:, None]-self.centers[None]
@@ -59,34 +60,40 @@ class LocalBackground:
     def density(self, points):
         return (self.partition(points)/self.integrals)@self.mass
 
+    def region_fractions(self, measure):
+        if self._region_projection is None:
+            basis = self.basis.reshape(*measure.shape, -1)
+            self._region_projection = np.einsum('rq,rqb->rb', measure, basis)
+        return self._region_projection @ self.mass
+
 
 class GaussianTargetBelief:
     """Action records preserve the legacy first 14 field positions.
 
     Extra fields: uniform mass, region width/height (map-normalized), reported
-    mass fraction. Type probabilities and expected life combine reported mass
+    mass fraction. Type probabilities and expected work_units combine reported mass
     with the background attribute prior. Tracks have no uniform mass.
     """
-    def __init__(self, config, initial_intel=None):
+    def __init__(self, config, initial_report=None):
         self.c = config
-        self.initial_intel = initial_intel
+        self.initial_report = initial_report
         self.cells = config.belief_grid**2
         self.capacity = self.cells + config.n_targets
         self.report = None  # Legacy histogram filter is not used.
         self.tracks = []
         self.components = []
-        if initial_intel:
-            counts = initial_intel['type_counts']
+        if initial_report:
+            counts = initial_report['type_counts']
             if (len(counts) != 3 or any(int(x) != x or x < 0 for x in counts)
                     or not 1 <= sum(counts) <= config.n_targets):
                 raise ValueError('Initial report requires valid type counts')
-            reports = initial_intel.get('objects')
+            reports = initial_report.get('objects')
             if reports is None:
                 # Read older report packets without changing their meaning.
-                reports = [dict(position=initial_intel['position'], type=typ,
-                                sigma_hint=initial_intel['sigma_hint'],
-                                log_sigma_std=initial_intel['log_sigma_std'],
-                                member_radius=initial_intel['member_radius'])
+                reports = [dict(position=initial_report['position'], type=typ,
+                                sigma_hint=initial_report['sigma_hint'],
+                                log_sigma_std=initial_report['log_sigma_std'],
+                                member_radius=initial_report['member_radius'])
                            for typ, count in enumerate(counts, 1) for _ in range(int(count))]
             reported_counts = np.zeros(3, dtype=int)
             for report in reports:
@@ -208,14 +215,14 @@ class GaussianTargetBelief:
         """
         known = {track['handle']: track for track in self.tracks}
         for observation in observations:
-            handle, position, typ, life = observation
+            handle, position, typ, work_units = observation
             if handle not in known:
                 if len(self.tracks) >= self.c.n_targets:
                     raise RuntimeError('Detected objects exceed configured capacity')
                 association = self._associate(position, typ)
                 variance = (self.c.position_noise/self.c.size)**2
                 track = dict(handle=handle, mean=np.asarray(position)/self.c.size,
-                             variance=variance, type=int(typ), life=int(life), seen=time,
+                             variance=variance, type=int(typ), work_units=int(work_units), seen=time,
                              initial_report_probability=association)
                 self.tracks.append(track)
                 known[handle] = track
@@ -229,7 +236,7 @@ class GaussianTargetBelief:
                     gain = track['variance']/(track['variance']+variance)
                     track['mean'] += gain*(np.asarray(position)/self.c.size-track['mean'])
                     track['variance'] *= 1-gain
-                track.update(type=int(typ), life=int(life), seen=time)
+                track.update(type=int(typ), work_units=int(work_units), seen=time)
 
         # Integrate the continuous sensor likelihood on the allowed domain.
         # Apply changes in conditional moments to Gaussian parameters: using
@@ -309,7 +316,7 @@ class GaussianTargetBelief:
         """Marginalize report vs background and one-to-one report matching.
 
         Updating subset probabilities prevents multiple detections from
-        consuming the same reported object, including simultaneous sightings.
+        matching the same report twice, including simultaneous sightings.
         Use the background density before this sensing update for association.
         """
         background = float(self.background_density(np.asarray(position)))*self.background_type_prior[int(typ)-1]
@@ -351,6 +358,13 @@ class GaussianTargetBelief:
         self.subset_probability = updated/total
         return report_evidence/total
 
+    def background_region_masses(self):
+        """Current background mass per search region, including deferred updates."""
+        if self.local_background is not None:
+            return self.background_mass * self.local_background.region_fractions(self.integration_weights)
+        density = np.exp(self._background_log_integral - self._background_log_normalizer)
+        return self.background_mass * (density * self.integration_weights).sum(axis=1)
+
     def refresh(self, time):
         if self._local_background_dirty:
             self._background_log_normalizer = 0.
@@ -389,10 +403,10 @@ class GaussianTargetBelief:
             reported = float(type_mass.sum())
             type_mass += float(background[k].sum())*self.background_type_prior
             fractions = type_mass/mass
-            life = float(fractions@np.array([2., 1., 1.]))
+            work_units = float(fractions@np.array([2., 1., 1.]))
             self.goals[k] = mean*c.size
             self.records[k] = [*mean, covariance[0, 0], covariance[0, 1], covariance[1, 1],
-                               *fractions, life/2, mass, 0, 0, *mean,
+                               *fractions, work_units/2, mass, 0, 0, *mean,
                                float(background[k].sum()),
                                *((self.bounds[k, 1]-self.bounds[k, 0])/c.size), reported/mass]
             self.valid[k] = True
@@ -400,10 +414,10 @@ class GaussianTargetBelief:
             k = self.cells+index
             typ = np.eye(3)[track['type']-1]
             self.records[k, :14] = [*track['mean'], track['variance'], 0, track['variance'],
-                                    *typ, track['life']/2, 1, 1,
+                                    *typ, track['work_units']/2, 1, 1,
                                     (time-track['seen'])/c.horizon, *track['mean']]
             self.records[k, 17] = 1
-            self.valid[k] = track['life'] > 0
+            self.valid[k] = track['work_units'] > 0
             self.goals[k] = track['mean']*c.size
 
     def snapshot(self):

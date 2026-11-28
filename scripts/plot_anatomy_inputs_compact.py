@@ -1,4 +1,4 @@
-"""Compare initial and pre-consumption input sensitivity from saved contexts."""
+"""Compare initial and pre-service input sensitivity from saved contexts."""
 import json
 from pathlib import Path
 import numpy as np
@@ -9,14 +9,14 @@ ROOT=Path(__file__).resolve().parents[1]
 out=ROOT/'runs/target_allocation_attention_anatomy'
 contexts=json.loads((out/'contexts.json').read_text())
 trajectories=json.loads((out/'trajectories.json').read_text())
-initial_life={r['seed']:r['life'] for r in trajectories if r['step']==0}
+initial_work_units={r['seed']:r['work_units'] for r in trajectories if r['step']==0}
 available=np.load(out/'inputs.npz')['available']
 base=np.load(out/'attention.npz')['baseline_logits']
 changed=np.load(out/'intervention_logits.npz')
 choice=np.where(available,base,-np.inf).argmax(-1)
 groups=[np.array([c['step']==0 for c in contexts]),
-        np.array([c['step']>0 and c['life']==initial_life[c['seed']] for c in contexts])]
-features={'target_position':'Target position','target_type':'Target type','target_life':'Target life',
+        np.array([c['step']>0 and c['work_units']==initial_work_units[c['seed']] for c in contexts])]
+features={'target_position':'Target position','target_type':'Target type','target_work_units':'Target work_units',
 'own_previous_probability':'Own previous probabilities','own_previous_choice':'Own previous choice',
 'peer_previous_intent':'Peers’ previous intentions','peer_position':'Peer positions',
 'peer_records_initial':'All peer details reset','peer_records_mean':'Only average peer details kept'}

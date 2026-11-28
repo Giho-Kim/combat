@@ -296,7 +296,7 @@ def main():
             items.append(dict(id=item['id'], vertices=vertices(p).tolist(), params=p.tolist(),
                 route=trajectory[:, :2].tolist(), seconds=duration, mass=mass,
                 background=float(background[mask].sum()*area), type_mass=tm.tolist(),
-                expected_life=float(tm@np.array([2., 1., 1.])/max(mass, 1e-12)),
+                expected_work_units=float(tm@np.array([2., 1., 1.])/max(mass, 1e-12)),
                 expected_detections=gain, lanes=len(waypoints)//2,
                 map_exit=bool(((trajectory[:, :2] < 0)|(trajectory[:, :2] > 10)).any())))
         order = np.argsort(reported)[::-1]
@@ -365,7 +365,7 @@ h1{font-size:27px;margin-bottom:8px}p{color:#aebbd0;line-height:1.6}button,selec
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 4px;border-bottom:1px solid #32445b;text-align:right}td:first-child,th:first-child{text-align:left}tr{cursor:pointer}tr.active{background:#364a64}.controls{display:flex;gap:12px;margin:20px 0;align-items:center;flex-wrap:wrap}.big{font-size:22px;font-weight:700}.muted{color:#9cafc6;font-size:13px}@media(max-width:900px){.layout{grid-template-columns:1fr}}
 </style>
 <h1>Belief → 탐색 polygon</h1><p>전역 belief의 질량과 방향에 맞춰 사다리꼴을 생성합니다. 후보를 클릭하면 해당 lawnmower 경로와 실제 Dubins 회전을 볼 수 있습니다.</p>
-<div class="controls"><select id="state"></select><select id="layer"><option value="total">전체 belief</option><option value="reported">보고 표적</option><option value="background">배경 분포</option></select><label><input id="all" type="checkbox" checked>전체 후보</label><label><input id="path" type="checkbox" checked>선택 후보 경로</label><button id="play">경로 재생</button></div>
+<div class="controls"><select id="state"></select><select id="layer"><option value="total">전체 belief</option><option value="reported">보고 작업 지점</option><option value="background">배경 분포</option></select><label><input id="all" type="checkbox" checked>전체 후보</label><label><input id="path" type="checkbox" checked>선택 후보 경로</label><button id="play">경로 재생</button></div>
 <div class="layout"><canvas id="map" width="820" height="820"></canvas><aside><div class="card" id="summary"></div><div class="card" id="detail"></div><div class="card"><table><thead><tr><th>후보</th><th>질량</th><th>시간</th><th>예상 발견*</th></tr></thead><tbody id="rows"></tbody></table></div></aside></div>
 <p class="muted">* 예상 발견은 진입·회전까지 포함한 전체 경로에서 센서 검출확률을 누적한 값입니다. 질량은 polygon 내부 적분값입니다. 각 시간은 동일 출발 상태에서 해당 후보 하나를 실행하는 데 걸리는 시간입니다.</p>
 <div class="card"><b>생성 규칙</b><p>질량 가중 군집화 → 분포 방향과 분위수로 사다리꼴 생성 → 추가로 덮는 질량·중복·시간으로 선택 → 중심·각도·높이·양쪽 폭·기울기를 국소 조정 → 실제 Dubins 경로가 300초 이내인 후보만 채택.</p><p class="muted">고정된 공개 초기정보와 제어된 관측 사건을 사용하는 데모입니다. 두 번째 화면은 첫 후보 경로에서 미검출을 누적한 결과이며, 세 번째는 지정 위치의 Type 1 발견을 추가한 결과입니다. 정책 학습 결과가 아닙니다. 주황색은 출발 위치와 선택 후보 경로입니다. 회전은 polygon 바깥으로 나갈 수 있습니다.</p></div>
@@ -382,7 +382,7 @@ if(document.querySelector('#path').checked){ctx.beginPath();p.route.forEach((v,i
 ctx.fillStyle='#ffb06b';ctx.beginPath();ctx.arc(...xy(c.start),5,0,2*Math.PI);ctx.fill();for(let v of c.tracks){ctx.fillStyle='#ff718a';ctx.beginPath();ctx.arc(...xy(v),7,0,2*Math.PI);ctx.fill()}
 if(tick>=0){ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(...xy(p.route[Math.min(tick,p.route.length-1)]),6,0,2*Math.PI);ctx.fill()}
 document.querySelector('#summary').innerHTML=`<div class="big">전체 질량 ${(c.coverage*100).toFixed(1)}% 포함</div><p>보고 고밀도 영역 ${(c.hot_coverage*100).toFixed(1)}%<br>후보 ${c.proposals.length}개 · 중복 질량 ${c.duplicate_mass.toFixed(2)}<br>후보 생성 ${c.generation_ms.toFixed(0)} ms<br>분포 평가 ${c.density_ms.toFixed(0)} ms</p><span class="muted">고밀도 영역: 보고 질량의 80%를 포함하는 밀도 상위 영역. 시간 측정은 상세 센서 경로 평가·렌더링 제외.</span>`;
-document.querySelector('#detail').innerHTML=`<b>P${p.id} · ${p.lanes}개 탐색 줄</b><p>진입 포함 ${(p.seconds/60).toFixed(2)}분<br>내부 질량 ${p.mass.toFixed(3)} · 배경 ${p.background.toFixed(3)}<br>타입별 ${p.type_mass.map(x=>x.toFixed(2)).join(' / ')}<br>평균 life ${p.expected_life.toFixed(2)}<br>경로 예상 발견 ${p.expected_detections.toFixed(3)}<br>맵 이탈 ${p.map_exit?'있음':'없음'}</p>`;
+document.querySelector('#detail').innerHTML=`<b>P${p.id} · ${p.lanes}개 탐색 줄</b><p>진입 포함 ${(p.seconds/60).toFixed(2)}분<br>내부 질량 ${p.mass.toFixed(3)} · 배경 ${p.background.toFixed(3)}<br>타입별 ${p.type_mass.map(x=>x.toFixed(2)).join(' / ')}<br>평균 work_units ${p.expected_work_units.toFixed(2)}<br>경로 예상 발견 ${p.expected_detections.toFixed(3)}<br>맵 이탈 ${p.map_exit?'있음':'없음'}</p>`;
 document.querySelector('#rows').innerHTML=c.proposals.map((a,i)=>`<tr data-i="${i}" class="${i===selected?'active':''}"><td>P${a.id}</td><td>${a.mass.toFixed(2)}</td><td>${(a.seconds/60).toFixed(1)}분</td><td>${a.expected_detections.toFixed(2)}</td></tr>`).join('');document.querySelectorAll('tr[data-i]').forEach(row=>row.onclick=()=>{selected=+row.dataset.i;stop();draw()})}
 function stop(){clearInterval(timer);tick=-1;document.querySelector('#play').textContent='경로 재생'}
 state.onchange=()=>{selected=0;stop();draw()};layer.onchange=draw;document.querySelector('#all').onchange=draw;document.querySelector('#path').onchange=draw;

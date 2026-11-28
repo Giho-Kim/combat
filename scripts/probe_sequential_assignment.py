@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import pointmass_rl.strike_ppo as trainer
-from pointmass_rl.env import strike_action
+import pointmass_rl.final_mission_ppo as trainer
+from pointmass_rl.env import final_mission_action
 s=Path('scripts/probe_2x2_event_credit.py').read_text();exec(s[:s.index('Original=graph.GraphQBody')].replace("root=Path('runs/critic_2x2_event_credit')","root=Path('runs/critic_2x2_sequential_assignment')"))
 Original=graph.GraphQBody
 graph.GraphQBody=lambda *a,**kw:Original(*a,**dict(kw,self_attention=False))
@@ -31,7 +31,7 @@ def sequential(model,worlds,schedules,deterministic=False):
  for j,(w,s) in enumerate(zip(worlds,schedules)):
   s.record(w,actions[j],decisions[j]&w.agent_active,probs[j])
  trace=dict(obs=obs,target=actions,logp=logps,probs=probs,action_mask=masks,decision=decisions)
- return strike_action(actions),[trace]
+ return final_mission_action(actions),[trace]
 trainer.allocated_actions=sequential
 # An action-independent state baseline keeps autoregressive policy gradients valid.
 def update(m,optimizers,batch,probabilities,epochs,width):

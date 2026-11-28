@@ -4,7 +4,7 @@ import torch
 from copy import deepcopy
 from torch import nn
 
-from .strike_ppo import (_ActorCriticBase, _TargetQBase, _initialization_mlp,
+from .final_mission_ppo import (_ActorCriticBase, _TargetQBase, _initialization_mlp,
                          _normalized_drone_velocities)
 
 
@@ -12,7 +12,7 @@ class TargetScoringBase(_ActorCriticBase):
     teammate_features = True
     mask_inactive_intent = True
     compact_inputs = True
-    critic_strike_participants = True
+    critic_final_mission_participants = True
     actor_teammate_progress = False
     actor_idle_status = True
     actor_previous_actions = False
@@ -38,9 +38,9 @@ class TargetScoringBase(_ActorCriticBase):
         nn.init.orthogonal_(self.target_head.weight, gain=.01)
         nn.init.zeros_(self.target_head.bias)
         if self.compact_inputs:
-            strike_matrix_width = (n_agents * n_targets
-                                   if self.critic_strike_participants else 0)
-            self.state_dim = 1 + 4 * n_agents + self.target_features * n_targets + strike_matrix_width
+            final_mission_matrix_width = (n_agents * n_targets
+                                   if self.critic_final_mission_participants else 0)
+            self.state_dim = 1 + 4 * n_agents + self.target_features * n_targets + final_mission_matrix_width
             if self.drone_velocity:
                 self.state_dim += 2 * n_agents
             if isinstance(self, _TargetQBase):
@@ -153,7 +153,7 @@ class TargetHistoryBase(TargetScoringBase, _TargetQBase):
     """Shared target scorer with teammate inputs and the Q-only COMA critic."""
     critic_previous_probabilities = True
     critic_mask_inactive_intent = True
-    critic_strike_participants = False
+    critic_final_mission_participants = False
     actor_previous_actions = True
     critic_previous_actions = True
     drone_velocity = True
@@ -229,7 +229,7 @@ class AssignmentQBody(AssignmentPooling):
         target_features = self.target_encoder(torch.cat((
             targets, pooled, counts,
             context.unsqueeze(-2).expand(*state.shape[:-1], t, context.shape[-1])), -1))
-        # Nonexistent padded targets contribute nothing; destroyed targets still
+        # Nonexistent padded targets contribute nothing; completed targets still
         # carry their type and remain part of the global physical state.
         exists = targets[..., 2:5].sum(-1, keepdim=True)
         summary = (target_features * exists).sum(-2)
@@ -268,7 +268,7 @@ class RelationalCriticBase(AssignmentCriticBase):
 
     def load_critic_checkpoint(self, path):
         """Transfer online and target Q across slot counts; leave actor untouched."""
-        from .strike_ppo import checkpoint_payload
+        from .final_mission_ppo import checkpoint_payload
         payload = checkpoint_payload(path)
         if payload.get('architecture') != 'target_allocation' or payload.get('hidden', 64) != self.hidden:
             raise ValueError('Critic transfer requires a Target Allocation checkpoint with matching hidden width')
@@ -311,6 +311,11 @@ class TargetAllocationActorCritic(RelationalCriticBase):
         self.actor_body = AttentionActorBody(hidden, time_embedding=actor_time_embedding)
 
     def actor_logits(self, obs, *, n_agents=None, n_targets=None):
+        features = self.actor_features(obs, n_agents=n_agents, n_targets=n_targets)
+        return self.target_head(features).squeeze(-1)
+
+    def actor_features(self, obs, *, n_agents=None, n_targets=None):
+        """The actor's per-target features before scoring."""
         n = self.n_agents if n_agents is None else n_agents
         t = self.n_targets if n_targets is None else n_targets
         if n < 1 or t < 1 or obs.shape[-1] != 3 + 8 * n + 6 * t + 2 * n * t:
@@ -342,5 +347,4 @@ class TargetAllocationActorCritic(RelationalCriticBase):
             *obs.shape[:-1], t, n, 5)
         peer = torch.cat((peer, probability.unsqueeze(-1), previous.unsqueeze(-1)), -1)
         mask = intent_mask & (identity < .5).unsqueeze(-2)
-        features = self.actor_body(query, peer, mask)
-        return self.target_head(features).squeeze(-1)
+        return self.actor_body(query, peer, mask)

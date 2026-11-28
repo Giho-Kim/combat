@@ -66,7 +66,7 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
     scouts = set(range(max(0, w.n-2), w.n)) if policy == 2 else set()
     frames, events = [], []
     cap = max(float(raster(b, 'total').max()), 1e-12)
-    planner.SPEED=config.strike_speed/10
+    planner.SPEED=config.final_mission_speed/10
     planner.RADIUS=config.belief_turn_radius/10
     proposals=[]
     last_plan=-1000
@@ -93,8 +93,8 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
                     dest=goal*10
                     paths.append(DubinsPath(pos,h,dest,angle,config.belief_turn_radius))
                     pos,h=dest,angle
-                duration=sum(path.length for path in paths)/config.strike_speed
-                sweep=sum(path.length for path in paths[1:])/config.strike_speed
+                duration=sum(path.length for path in paths)/config.final_mission_speed
+                sweep=sum(path.length for path in paths[1:])/config.final_mission_speed
                 if sweep<=planner.BUDGET: options.append((duration,paths))
         if not options: return False
         _,paths=min(options,key=lambda item:item[0])
@@ -133,9 +133,9 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
                 patrol(i)
             if w.t >= config.horizon//2 and nav[i] and nav[i]['kind'] == 'patrol':
                 nav[i] = None
-        tracks = [t for t in b.tracks if t['life'] > 0]
+        tracks = [t for t in b.tracks if t['work_units'] > 0]
         if policy == 2:
-            tracks.sort(key=lambda t: (-target_remaining_value(t['type'], t['life']), t['type']))
+            tracks.sort(key=lambda t: (-target_remaining_value(t['type'], t['work_units']), t['type']))
         else:
             tracks.sort(key=lambda t: min(np.linalg.norm(w.pos[i]-t['mean']*config.size)
                                          for i in range(w.n) if w.agent_active[i]))
@@ -146,7 +146,7 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
                          and not (i in scouts and w.t < config.horizon//2)
                          and (nav[i] is None or nav[i]['kind']=='search')]
             available.sort(key=lambda i: np.linalg.norm(w.pos[i]-t['mean']*config.size))
-            for i in available[:max(0, int(t['life'])-existing)]:
+            for i in available[:max(0, int(t['work_units'])-existing)]:
                 target(i, t)
         if w.t-last_plan>=60 or not proposals or any(
                 w.agent_active[i] and nav[i] is None for i in range(w.n)):
@@ -178,10 +178,10 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
                                and n['polygon']==p['id']),-1)) for p in proposals]
                 +[dict(id=-i-1,vertices=n['region'].tolist(),assigned=i)
                    for i,n in enumerate(nav) if n and n['kind']=='patrol'],
-            discovered=len(b.tracks), completed=int(w.destroyed[w.target_exists].sum()),
-            tracks=[dict(position=(t['mean']*10).tolist(), type=int(t['type']), life=int(t['life'])) for t in b.tracks],
+            discovered=len(b.tracks), completed=int(w.target_completed[w.target_exists].sum()),
+            tracks=[dict(position=(t['mean']*10).tolist(), type=int(t['type']), work_units=int(t['work_units'])) for t in b.tracks],
             truth=[dict(position=(w.targets[j]/10).tolist(), type=int(w.target_type[j]),
-                        life=int(w.target_life[j])) for j in np.flatnonzero(w.target_exists)]))
+                        work_units=int(w.target_work_units[j])) for j in np.flatnonzero(w.target_exists)]))
 
     assign(); record()
     for _ in range(config.horizon):
@@ -191,29 +191,29 @@ def simulate(config, seed, policy, opposite_formation_two=False, arc_formation_t
             if not w.agent_active[i] or n is None:
                 continue
             if n['kind']=='target': raw[i]=n['handle']
-            if w.strike_participants[:,i].any(): continue
-            distance = config.strike_speed*config.dt
+            if w.final_mission_participants[:,i].any(): continue
+            distance = config.final_mission_speed*config.dt
             while distance > 1e-9 and n['paths']:
                 w.pos[i], w.heading[i], distance = n['paths'][0].move(w.pos[i],w.heading[i],distance)
                 if n['paths'][0].done: n['paths'].pop(0)
             if not n['paths'] and n['kind'] != 'target': nav[i]=None
-        w.vel=(w.pos-old)/config.dt; w.t+=1; w.last_damage_by_agent.fill(0)
-        w._resolve_strikes(raw)
+        w.vel=(w.pos-old)/config.dt; w.t+=1; w.last_progress_value_by_agent.fill(0)
+        w._resolve_final_missions(raw)
         for i in np.flatnonzero(before & ~w.agent_active):
-            events.append(dict(step=int(w.t), drone=int(i), target=int(raw[i]), event='consume'))
+            events.append(dict(step=int(w.t), drone=int(i), target=int(raw[i]), event='service_end'))
             for t in b.tracks:
-                if t['handle']==raw[i]: t.update(life=int(w.target_life[raw[i]]), seen=w.t)
+                if t['handle']==raw[i]: t.update(work_units=int(w.target_work_units[raw[i]]), seen=w.t)
             nav[i]=None
         world._sense()
         if w.agent_active.any(): assign()
         if w.t % 10 == 0 or not w.agent_active.any(): record()
         if not w.agent_active.any(): break
     if frames[-1]['step'] != w.t: record()
-    summary=dict(seed=seed, heuristic=policy, completed=int(w.destroyed[w.target_exists].sum()),
+    summary=dict(seed=seed, heuristic=policy, completed=int(w.target_completed[w.target_exists].sum()),
                  total=int(w.target_exists.sum()), discovered=len(b.tracks), steps=int(w.t),
                  mean_polygon_generation_ms=float(np.mean(generation_times)))
-    summary.update(completed_f1=int(w.destroyed[w.target_exists & (w.target_formation==0)].sum()),completed_f2=int(w.destroyed[w.target_exists & (w.target_formation==1)].sum()))
-    return dict(summary=summary,initial_intel=b.initial_intel,frames=frames,events=events,layout=dict(targets=w.spawn_position.tolist(),formations=w.target_formation.tolist(),centers=w.formation_centers.tolist()))
+    summary.update(completed_f1=int(w.target_completed[w.target_exists & (w.target_formation==0)].sum()),completed_f2=int(w.target_completed[w.target_exists & (w.target_formation==1)].sum()))
+    return dict(summary=summary,initial_intel=b.initial_report,frames=frames,events=events,layout=dict(targets=w.spawn_position.tolist(),formations=w.target_formation.tolist(),centers=w.formation_centers.tolist()))
 
 
 from scripts.belief_video_style import video
@@ -221,7 +221,7 @@ from scripts.belief_video_style import video
 
 def add_value_metrics(data):
     first=data['frames'][0]['truth'];last=data['frames'][-1]['truth']
-    earned=np.array([target_remaining_value(a['type'],a['life'])-target_remaining_value(b['type'],b['life']) for a,b in zip(first,last)])
+    earned=np.array([target_remaining_value(a['type'],a['work_units'])-target_remaining_value(b['type'],b['work_units']) for a,b in zip(first,last)])
     formation=np.array(data['layout']['formations'])[:len(earned)]
     data['summary'].update(value=float(earned.sum()),value_f1=float(earned[formation==0].sum()),value_f2=float(earned[formation==1].sum()))
     return data
@@ -269,7 +269,7 @@ def main():
         h1='Existing belief-based trapezoid generator, disjoint polygon IDs, 100m lawnmower with Dubins connectors; immediate target processing.',
         h2='Two scouts cover disjoint map halves in 100m lanes until half horizon; other drones use greedy search and type-value priority. Scouts join type-value priority after half horizon.',
         formation_two_layout='uniform feasible arc, radius half map side, clustered pair' if args.arc_formation_two else 'opposite F1, clustered' if args.opposite_formation_two else 'configured',
-        metric='Earned type-weighted value: type 1 = 2.5 per life, type 2 = 2, type 3 = 1; includes partial progress on type 1.'),indent=2))
+        metric='Earned type-weighted value: type 1 = 2.5 per work_units, type 2 = 2, type 3 = 1; includes partial progress on type 1.'),indent=2))
     print(summary,flush=True)
 
     import matplotlib

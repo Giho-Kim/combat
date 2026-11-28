@@ -8,8 +8,8 @@ from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 # Reuse physical families and resets only, not the previous training loops.
 s=Path('scripts/probe_matched_sequential.py').read_text();exec(s[:s.index('\nOriginal=graph.GraphQBody')])
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
-from pointmass_rl.strike_ppo import DecisionSchedule,_model_observation,model_from_checkpoint
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_ppo import DecisionSchedule,_model_observation,model_from_checkpoint
 out=Path('runs/critic_2x2_episode_exploration');out.mkdir(exist_ok=True);c.save(out/'config.json');torch.set_num_threads(1);torch.manual_seed(7);rng=np.random.default_rng(7);m=TargetAllocationActorCritic(2,2)
 O=[];A=[];R=[]
 for ep in range(4096):
@@ -17,7 +17,7 @@ for ep in range(4096):
  for i in order:
   obs[i]=_model_observation(m,w,schedule)[i];schedule.targets[i]=joint[i];schedule.previous_action_probabilities[i]=np.eye(2)[joint[i]]
  before=w.score
- while not w.done:w.step(strike_action(joint))
+ while not w.done:w.step(final_mission_action(joint))
  O.append(obs);A.append(joint);R.append(w.score-before)
  if (ep+1)%1024==0:print('Collected',ep+1,flush=True)
 np.savez_compressed(out/'experience.npz',observations=O,actions=A,returns=R)

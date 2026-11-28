@@ -2,18 +2,18 @@
 import json
 from pathlib import Path
 import numpy as np
-from .strike_lookahead import completion_steps
+from .final_mission_lookahead import completion_steps
 
 def assignment_upper_bound(world):
-    if world.c.mode!='known' or world.c.target_motion_scale!=0 or world.c.strike_probability!=1:
+    if world.c.mode!='known' or world.c.target_motion_scale!=0 or world.c.final_mission_probability!=1:
         raise ValueError('Oracle-gap curriculum requires known stationary deterministic targets')
     agents=np.flatnonzero(world.agent_active)
     if len(agents)>16:raise ValueError('Exact assignment oracle supports at most 16 active drones')
     masks=np.arange(1<<len(agents));dp=np.full(len(masks),-np.inf);dp[0]=0.
     feasible=completion_steps(world)[agents]<=world.c.horizon-world.t
-    for target in np.flatnonzero(world.target_exists & ~world.destroyed):
+    for target in np.flatnonzero(world.target_exists & ~world.target_completed):
         value={1:2.5,2:2.,3:1.}[int(world.target_type[target])]
-        for _ in range(int(world.target_life[target])):
+        for _ in range(int(world.target_work_units[target])):
             nxt=dp.copy()
             for agent in np.flatnonzero(feasible[:,target]):
                 bit=1<<int(agent);source=masks[(masks&bit)==0]

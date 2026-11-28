@@ -2,7 +2,7 @@
 
 A target has 0/1/2 future completed units. Learned time-indexed transition
 probabilities describe 0->0/1/2 and 1->1/2; 2 is absorbing. Thus the second
-completion cannot precede the first, and remaining life bounds total reward.
+completion cannot precede the first, and remaining work_units bounds total reward.
 No travel-time calculation, oracle, assignment persistence or planner is used.
 """
 from copy import deepcopy
@@ -12,7 +12,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .graph_critic import GraphQBody
-from .strike_target_actor import TargetAllocationActorCritic
+from .final_mission_target_actor import TargetAllocationActorCritic
 
 class TemporalGraphQBody(GraphQBody):
     def __init__(self,hidden=64,horizon=100,gamma=1.,self_attention=False):
@@ -27,14 +27,14 @@ class TemporalGraphQBody(GraphQBody):
     def event_logs(self,state,action):
         _,target,time,_,exists,raw=self.encode(state,action)
         logits=self.event_head(torch.cat((target,time.unsqueeze(-2).expand_as(target)),-1)).reshape(*target.shape[:-1],self.horizon,4)
-        life=(raw[...,-1]*2).round().long().clamp(0,2)*exists.long()
+        work_units=(raw[...,-1]*2).round().long().clamp(0,2)*exists.long()
         first=logits[...,:3].clone()
-        first[...,2]=first[...,2].masked_fill(life.unsqueeze(-1)<2,-torch.inf)
+        first[...,2]=first[...,2].masked_fill(work_units.unsqueeze(-1)<2,-torch.inf)
         log0=F.log_softmax(first,-1)
         log12=F.logsigmoid(logits[...,3]);log11=F.logsigmoid(-logits[...,3])
-        log12=log12.masked_fill(life.unsqueeze(-1)<2,-torch.inf)
-        log11=torch.where(life.unsqueeze(-1)<2,torch.zeros_like(log11),log11)
-        return log0,log11,log12,life,raw
+        log12=log12.masked_fill(work_units.unsqueeze(-1)<2,-torch.inf)
+        log11=torch.where(work_units.unsqueeze(-1)<2,torch.zeros_like(log11),log11)
+        return log0,log11,log12,work_units,raw
 
     @staticmethod
     def event_masses(log0,log11,log12):
@@ -49,7 +49,7 @@ class TemporalGraphQBody(GraphQBody):
         return first,second
 
     def forward(self,state,action):
-        log0,log11,log12,life,raw=self.event_logs(state,action)
+        log0,log11,log12,work_units,raw=self.event_logs(state,action)
         first,second=self.event_masses(log0,log11,log12)
         remaining=(state[...,0]*self.horizon).round().long().clamp(0,self.horizon)
         offsets=torch.arange(self.horizon,device=state.device)
@@ -59,13 +59,13 @@ class TemporalGraphQBody(GraphQBody):
         value=(raw[...,2:5]*torch.tensor([2.5,2.,1.],device=state.device,dtype=state.dtype)).sum(-1)
         n=action.shape[-1]
         has_agent=(state[...,1:1+4*n].reshape(*state.shape[:-1],n,4)[...,2]>.5).any(-1)
-        return (expected*value*(life>0)).sum(-1)*has_agent
+        return (expected*value*(work_units>0)).sum(-1)*has_agent
 
     def completion_loss(self,state,action,previous_count,next_count,observed):
-        log0,log11,log12,life,_=self.event_logs(state,action)
+        log0,log11,log12,work_units,_=self.event_logs(state,action)
         prev=previous_count.long();nxt=next_count.long()
         log_likelihood=torch.where(prev==0,log0.gather(-1,nxt.clamp(0,2).unsqueeze(-1)).squeeze(-1),torch.where(nxt>prev,log12,log11))
-        valid=observed.unsqueeze(-2)&(prev<life.unsqueeze(-1))&(life.unsqueeze(-1)>0)
+        valid=observed.unsqueeze(-2)&(prev<work_units.unsqueeze(-1))&(work_units.unsqueeze(-1)>0)
         # Sum the observed path log-likelihood; average over supervised targets.
         supervised=valid.any(-1)
         if not supervised.any():return self.event_head[-1].weight.sum()*0
@@ -96,21 +96,21 @@ class TemporalActorCritic(TargetAllocationActorCritic):
         return (outcome-(q*action_probabilities).sum(-1))*alive
 
 
-def trajectory_labels(damage,done,horizon):
+def trajectory_labels(progress,done,horizon):
     """Observed paths from every rollout state; rollout cutoffs are right-censored.
 
     No observation beyond an environment reset or beyond the actual collected
     suffix is labelled as a non-completion.
     """
-    damage=np.asarray(damage,dtype=np.int64);done=np.asarray(done,dtype=bool)
-    steps,envs,targets=damage.shape
+    progress=np.asarray(progress,dtype=np.int64);done=np.asarray(done,dtype=bool)
+    steps,envs,targets=progress.shape
     previous=np.zeros((steps,envs,targets,horizon),np.int8)
     following=np.zeros_like(previous);observed=np.zeros((steps,envs,horizon),bool)
     for start in range(steps):
         count=np.zeros((envs,targets),np.int64);live=np.ones(envs,bool)
         for offset in range(min(horizon,steps-start)):
             t=start+offset;previous[start,:,:,offset]=count
-            count=np.minimum(2,count+damage[t]*live[:,None]);following[start,:,:,offset]=count
+            count=np.minimum(2,count+progress[t]*live[:,None]);following[start,:,:,offset]=count
             observed[start,:,offset]=live;live=live&~done[t]
             if not live.any():break
     return dict(temporal_previous=previous.reshape(-1,targets,horizon),temporal_next=following.reshape(-1,targets,horizon),temporal_observed=observed.reshape(-1,horizon))

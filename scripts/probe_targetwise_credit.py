@@ -5,10 +5,10 @@ import numpy as np
 import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import pointmass_rl.strike_ppo as trainer
+import pointmass_rl.final_mission_ppo as trainer
 import pointmass_rl.graph_critic as graph
 from pointmass_rl.env import World,Config
-from pointmass_rl.strike_ppo import train_target_allocation,save_checkpoint,evaluate_model
+from pointmass_rl.final_mission_ppo import train_target_allocation,save_checkpoint,evaluate_model
 # Reuse identical physical training mixture.
 s=Path('scripts/probe_2x2_onpolicy.py').read_text();prefix=s[:s.index('Original=graph.GraphQBody')];exec(prefix.replace("root=Path('runs/critic_2x2_onpolicy_failures')","root=Path('runs/critic_2x2_targetwise_credit')"))
 Original=graph.GraphQBody
@@ -23,7 +23,7 @@ class Targetwise(Original):
 graph.GraphQBody=Targetwise
 records=[];step_original=World.step
 def track_step(w,action):
- life=w.target_life.copy();result=step_original(w,action);damage=life-w.target_life;values=np.array([2.5 if t==1 else 2. if t==2 else 1. for t in w.target_type]);records.append((damage*values,bool(result[2] or result[3])));return result
+ work_units=w.target_work_units.copy();result=step_original(w,action);progress=work_units-w.target_work_units;values=np.array([2.5 if t==1 else 2. if t==2 else 1. for t in w.target_type]);records.append((progress*values,bool(result[2] or result[3])));return result
 World.step=track_step
 update_original=trainer._coma_update
 def update(m,opts,batch,prob,epochs,width):

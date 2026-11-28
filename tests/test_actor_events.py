@@ -4,7 +4,7 @@ from unittest.mock import patch
 import torch
 
 from pointmass_rl.env import Config, World
-from pointmass_rl.strike_ppo import _actor_event, train_target_allocation, _ppo_update
+from pointmass_rl.final_mission_ppo import _actor_event, train_target_allocation, _ppo_update
 
 
 class ActorEventTests(unittest.TestCase):
@@ -14,10 +14,10 @@ class ActorEventTests(unittest.TestCase):
         self.assertTrue(_actor_event(world))
         world.t = 2
         self.assertFalse(_actor_event(world))
-        world.strike_participants[0, 0] = True
-        world.agent_strike_progress[0] = world.c.strike_steps_per_life - 2
+        world.final_mission_participants[0, 0] = True
+        world.agent_final_mission_progress[0] = world.c.service_steps_per_unit - 2
         self.assertFalse(_actor_event(world))
-        world.agent_strike_progress[0] += 1
+        world.agent_final_mission_progress[0] += 1
         self.assertTrue(_actor_event(world))
         world.agent_active[0] = False
         self.assertFalse(_actor_event(world))
@@ -32,7 +32,7 @@ class ActorEventTests(unittest.TestCase):
             batches.append({key: value.clone() for key, value in batch.items()})
             return _ppo_update(model, optimizers, batch, epochs, minibatch_size)
         for mode in ('all', 'events'):
-            with patch('pointmass_rl.strike_ppo._ppo_update', side_effect=update):
+            with patch('pointmass_rl.final_mission_ppo._ppo_update', side_effect=update):
                 model, _, _, _ = train_target_allocation(config, 18, seed=4, rollout_steps=6,
                     epochs=1, n_envs=1, eval_interval=0, actor_samples=mode)
             self.assertEqual(model.training_settings['actor_sample_mode'], mode)

@@ -13,7 +13,7 @@ def run(v):
     command=[sys.executable,'-m','pointmass_rl','train',*args,'--encoder-engineering',v,'--out',str(path)]
     (OUT/f'{v}_command.json').write_text(json.dumps(command,indent=2))
     with (OUT/f'{v}.log').open('w') as f:
-        result=subprocess.run(command,cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,env={**os.environ,'OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','MPLCONFIGDIR':'/tmp/combat_mpl'})
+        result=subprocess.run(command,cwd=ROOT,stdout=f,stderr=subprocess.STDOUT,env={**os.environ,'OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','MPLCONFIGDIR':'/tmp/pointmass_mpl'})
     return v,result.returncode
 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
     for v,code in pool.map(run,variants):print(v,code,flush=True)

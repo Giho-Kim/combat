@@ -18,8 +18,8 @@ from torch import nn
 from .belief_env import BeliefWorld
 from .gaussian_belief import GAUSSIAN_FEATURES
 from .belief_policy import BeliefActorCritic, choose_action, stack_observations, subset
-from .env import Config, strike_action
-from .strike_ppo import _td_lambda_returns
+from .env import Config, final_mission_action
+from .final_mission_ppo import _td_lambda_returns
 
 
 GUARDED_EXPLORATION_RESOLVER = 'score_time_limit_revisit_guard'
@@ -74,9 +74,11 @@ def save_belief_checkpoint(path, model, target, config, metadata, optimizer=None
         payload['training_settings'].update(shared_encoder=False,
             policy='Target Allocation peer actor and cross-attention Q; separate encoders',
             update='Q warm-up; PPO with COMA advantages and auxiliary Q loss',
-            reward='value of first detections only; no consumption',
-            actions='full search-support rectangular partition; hold until one sweep completes')
-        if model.architecture == 'polygon_exploration_decision_ppo':
+            reward='value of first detections',
+            actions=('full search-support rectangular partition; choose every physics step'
+                     if config.exploration_every_step else
+                     'full search-support rectangular partition; hold until one sweep completes'))
+        if model.architecture in ('polygon_exploration_decision_ppo', 'polygon_exploration_decision_ppo_absolute'):
             payload['training_settings'].update(
                 policy='Target Allocation peer actor and action-independent graph V; separate encoders',
                 update='complete polygon decisions; full-episode Monte Carlo return minus behavior V; PPO',
@@ -88,24 +90,33 @@ def load_belief_checkpoint(path, config=None):
     payload=torch.load(path,map_location='cpu',weights_only=False)
     if payload.get('architecture') not in (BeliefActorCritic.architecture, 'belief_target_coma_gaussian_uniform_v2',
                                            'polygon_exploration_target_allocation',
-                                           'polygon_exploration_decision_ppo'):
+                                           'polygon_exploration_decision_ppo', 'polygon_exploration_decision_ppo_absolute'):
         raise ValueError('Belief mode requires a belief checkpoint; Target Allocation uses --mode known')
-    config=config or Config(**payload['config'])
+    config=config or Config.from_saved_dict(payload['config'])
     if config.mode!='belief':
         raise ValueError('Belief checkpoint requires --mode belief')
     features = GAUSSIAN_FEATURES if config.belief_representation == 'gaussian_uniform' else 14
     if features != payload.get('features', 14):
         raise ValueError('Checkpoint belief representation differs from config; train a new model for gaussian_uniform')
-    if payload['architecture'] == 'polygon_exploration_decision_ppo':
+    if payload['architecture'] in ('polygon_exploration_decision_ppo', 'polygon_exploration_decision_ppo_absolute'):
         if not config.belief_exploration_only:
             raise ValueError('Decision PPO checkpoint requires exploration-only config')
         from .exploration import ExplorationPPOActorCritic
-        model = ExplorationPPOActorCritic(payload['hidden'])
+        model = ExplorationPPOActorCritic(payload['hidden'],
+            absolute_positions=payload['architecture'] == ExplorationPPOActorCritic.absolute_architecture)
     else:
         model=make_model(config, payload['hidden'])
     if model.architecture != payload['architecture']:
         raise ValueError('Checkpoint policy and configured belief task differ')
-    model.load_state_dict(payload['state_dict'])
+    state = payload['state_dict']
+    if payload['architecture'] == 'polygon_exploration_decision_ppo_absolute':
+        key = 'actor_body.query_encoder.0.weight'
+        weight = state[key]
+        if weight.shape[1] == GAUSSIAN_FEATURES+1+7:
+            # Earlier absolute-position checkpoints included two zero track fields.
+            state = dict(state)
+            state[key] = torch.cat((weight[:, :10], weight[:, 12:]), dim=1)
+    model.load_state_dict(state)
     model.eval()
     return model,config,payload
 
@@ -142,7 +153,7 @@ class ExplorationRevisitGuard:
         state = world._world
         if deciding.size and state.t > 0 and world.belief.remaining_types.sum() == 0:
             self.completed.update(self.last_assignment[i] for i in deciding
-                                  if i in self.last_assignment)
+                                  if i in self.last_assignment and world.navigation[i] is None)
             assigned = set(action[state.agent_active])
             mass = world.belief.weights.sum(axis=1)
             distance_km = np.linalg.norm(state.pos[:, None] - self.centers[None], axis=-1) / 10
@@ -211,9 +222,9 @@ def evaluate_belief(model, config, episodes=30, seed=10000, resolver='none', bas
                 if guard is not None:
                     guard.apply(world, obs['decision'], candidate_mask, action, prob)
             if fast_exploration:
-                obs, _, _, _, metrics = world.step(strike_action(action), prob, decisions_only=True)
+                obs, _, _, _, metrics = world.step(final_mission_action(action), prob, decisions_only=True)
             else:
-                obs, _, _, _, metrics = world.step(strike_action(action), prob)
+                obs, _, _, _, metrics = world.step(final_mission_action(action), prob)
             if recording:
                 replay_frames.append(frame(world,obs,action))
         if guard is not None:
@@ -346,7 +357,7 @@ def train_belief(config, total_steps, out, seed=7, n_envs=8, rollout_steps=64,
             active_count=int(batch['active'].sum())
             completed+=active_count
             for i,world in enumerate(worlds):
-                obs[i],reward,terminated,truncated,metrics=world.step(strike_action(action[i].numpy()),probabilities[-1][i].numpy())
+                obs[i],reward,terminated,truncated,metrics=world.step(final_mission_action(action[i].numpy()),probabilities[-1][i].numpy())
                 done=terminated or truncated
                 step_reward.append(reward)
                 step_done.append(done)
@@ -406,7 +417,8 @@ def command_train(args, config):
             learning_rate=args.learning_rate, entropy_coef=args.entropy_coef, policy_clip=args.policy_clip,
             eval_interval=args.eval_interval, eval_episodes=args.eval_episodes, eval_seed=args.eval_seed,
             device=args.device, eval_workers=args.eval_workers, eval_screen_episodes=args.eval_screen_episodes,
-            eval_revisit_guard=getattr(args, 'eval_revisit_guard', False))
+            eval_revisit_guard=getattr(args, 'eval_revisit_guard', False),
+            checkpoint_interval=getattr(args, 'exploration_checkpoint_interval', 500000))
     return train_belief(config,args.steps,args.out,seed=args.seed,n_envs=args.n_envs,
             rollout_steps=args.rollout_steps,epochs=args.epochs,critic_epochs=args.critic_epochs or args.epochs,
             minibatch_size=args.minibatch_size or 32,learning_rate=args.learning_rate,

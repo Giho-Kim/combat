@@ -12,7 +12,7 @@ from torch import nn
 from .attention_actor import AttentionActorBody
 from .belief_env import BeliefWorld, _BeliefLayoutWorld
 from .belief_policy import BeliefActorCritic
-from .env import split_strike_action, target_remaining_value
+from .env import split_final_mission_action, target_remaining_value
 from .gaussian_belief import GAUSSIAN_FEATURES
 from .graph_critic import GraphQBody
 from .navigation import DubinsPath, rectangle_entry_distance
@@ -24,6 +24,63 @@ DRONE_FEATURES = 14
 class _ExplorationLayoutWorld(_BeliefLayoutWorld):
     def _sample_agent_count(self, actual_targets):
         return self._count(max(self.c.min_agents, actual_targets), self.c.n_agents)
+
+    def _sample_start_center(self):
+        c = self.c
+        margin = c.belief_search_margin + c.friendly_formation_radius
+        lo, hi = c.belief_search_margin, c.size-c.belief_search_margin
+        corners = np.array([[lo, lo], [lo, hi], [hi, lo], [hi, hi]])
+        for _ in range(4000):
+            side = int(self.rng.integers(4))
+            point = self.rng.uniform(margin, c.size-margin, 2)
+            axis, upper = divmod(side, 2)
+            point[axis] = c.size-margin if upper else margin
+            if np.linalg.norm(corners-point, axis=1).max() > 80.:
+                break
+        else:
+            raise RuntimeError('Search area cannot accommodate the 8 km spawn radius')
+        self._spawn_inward = np.zeros(2)
+        self._spawn_inward[axis] = -1 if upper else 1
+        return point
+
+    def _sample_formation_center(self, formation, centers, evaluation_task, success_threshold,
+                                 balanced_five_target_case):
+        radius = 80. if formation == 0 else 40.  # Ten map units per kilometre.
+        forward = self._spawn_inward
+        lateral = np.array([-forward[1], forward[0]])
+        margin = self.c.belief_search_margin
+        for _ in range(4000):
+            angle = self.rng.uniform(-np.pi/2, np.pi/2)
+            point = self.agent_start_center + radius*(
+                np.cos(angle)*forward + np.sin(angle)*lateral)
+            if np.all(point >= margin) and np.all(point <= self.c.size-margin):
+                return point
+        raise RuntimeError('Semicircle does not intersect the search area for this start')
+
+    def _valid_spawn(self, point, min_base_distance):
+        margin = self.c.belief_search_margin
+        return bool(np.all(point >= margin) and np.all(point <= self.c.size-margin))
+
+    def _individual_reports(self):
+        # Reports observe the sampled sites. Their uncertainty never relocates sites.
+        c = self.c
+        reports = []
+        ids = np.flatnonzero(self.target_exists & (self.target_formation == 0))
+        for target in ids:
+            sigma = float(self.rng.lognormal(np.log(c.belief_intel_sigma),
+                                             c.belief_intel_log_sigma_std))
+            for _ in range(4000):
+                reported = self.targets[target] + self.rng.normal(0., sigma, 2)
+                if self._valid_spawn(reported, 0):
+                    break
+            else:
+                raise RuntimeError('Could not place a report inside the search area')
+            reports.append(dict(position=reported.tolist(), type=int(self.target_type[target]),
+                                sigma_hint=c.belief_intel_sigma,
+                                log_sigma_std=c.belief_intel_log_sigma_std))
+        self.initial_report = dict(objects=reports,
+            position=np.mean([r['position'] for r in reports], axis=0).tolist(),
+            type_counts=np.bincount(self.target_type[ids], minlength=4)[1:4].tolist())
 
 
 class PolygonExplorationWorld(BeliefWorld):
@@ -50,7 +107,7 @@ class PolygonExplorationWorld(BeliefWorld):
         decision = w.agent_active.copy()
         mask[~decision, 1:] = False
         for i, nav in enumerate(self.navigation):
-            if nav is not None:
+            if nav is not None and not self.c.exploration_every_step:
                 mask[i] = False
                 mask[i, nav['component']] = True
                 decision[i] = False
@@ -93,11 +150,11 @@ class PolygonExplorationWorld(BeliefWorld):
     def _navigate_polygon(self, i, component):
         w, c = self._world, self.c
         nav = self.navigation[i]
-        if nav is None:
+        if nav is None or (c.exploration_every_step and nav['component'] != component):
             nav = dict(component=int(component), sweeping=True, index=0, path=None,
                        waypoints=self._waypoints(component, w.pos[i]))
             self.navigation[i] = nav
-        budget = c.strike_speed*c.dt
+        budget = c.final_mission_speed*c.dt
         while budget > 1e-10 and nav['index'] < len(nav['waypoints']):
             destination, heading = nav['waypoints'][nav['index']]
             w.last_goal[i] = destination
@@ -125,7 +182,7 @@ class PolygonExplorationWorld(BeliefWorld):
             path = DubinsPath(position, heading, destination, end_heading, c.belief_turn_radius)
             entry = rectangle_entry_distance(path, position, heading, lo, hi)
             if math.isfinite(entry):
-                return max(0, math.ceil((travelled+entry)/(c.strike_speed*c.dt)-1e-9))
+                return max(0, math.ceil((travelled+entry)/(c.final_mission_speed*c.dt)-1e-9))
             travelled += path.length
             position, heading = destination, end_heading
         return math.inf
@@ -150,7 +207,7 @@ class PolygonExplorationWorld(BeliefWorld):
         w, c = self._world, self.c
         if w.done:
             raise RuntimeError('Episode ended; call reset()')
-        proposed = split_strike_action(action)
+        proposed = split_final_mission_action(action)
         mask, decision = self.action_mask()
         if (proposed.shape != (self.n,) or not np.issubdtype(proposed.dtype, np.integer)
                 or np.any(proposed < 0) or np.any(proposed >= self.action_count)
@@ -170,7 +227,7 @@ class PolygonExplorationWorld(BeliefWorld):
         for i in np.flatnonzero(w.agent_active):
             self._navigate_polygon(i, proposed[i])
         w.vel = (w.pos-old_pos)/c.dt
-        w.last_damage_by_agent.fill(0)
+        w.last_progress_value_by_agent.fill(0)
         w.last_agent_terminated.fill(False)
         w.t += 1
         # Always update the filter. Its observation summaries are needed only
@@ -181,7 +238,7 @@ class PolygonExplorationWorld(BeliefWorld):
         else:
             self._sense(refresh=False)
         newly_found = w.discovered & ~before & w.target_exists
-        reward = sum(target_remaining_value(w.target_type[j], w.target_life[j])
+        reward = sum(target_remaining_value(w.target_type[j], w.target_work_units[j])
                      for j in np.flatnonzero(newly_found))
         w.rewards_total += reward
         w.discounted_rewards_total += c.discount_gamma**(w.t-1)*reward
@@ -193,13 +250,13 @@ class PolygonExplorationWorld(BeliefWorld):
     def metrics(self):
         result = super().metrics()
         w = self._world
-        found = sum(target_remaining_value(w.target_type[j], w.target_life[j])
+        found = sum(target_remaining_value(w.target_type[j], w.target_work_units[j])
                     for j in np.flatnonzero(w.discovered & w.target_exists))
-        total = sum(target_remaining_value(w.target_type[j], w.target_life[j])
+        total = sum(target_remaining_value(w.target_type[j], w.target_work_units[j])
                     for j in np.flatnonzero(w.target_exists))
         result.update(score=float(found), success_threshold=float(total),
                       mission_success=bool(w.discovered[w.target_exists].all()),
-                      discovered_value=float(found), consumed_objects=0,
+                      discovered_value=float(found), completed_sites=0,
                       agent_count=w.initial_agent_count, target_count=int(w.target_exists.sum()))
         return result
 
@@ -253,6 +310,10 @@ class ExplorationActorCritic(BeliefActorCritic):
         self.q_head = nn.Linear(hidden, 1)
 
     def actor_logits(self, obs):
+        return self.actor_head(self.actor_features(obs)).squeeze(-1)
+
+    def actor_features(self, obs):
+        """The frozen actor's per-drone, per-region features before scoring."""
         d = obs['drones']
         b, n, _ = d.shape
         k = obs['beliefs'].shape[1]
@@ -273,7 +334,7 @@ class ExplorationActorCritic(BeliefActorCritic):
             obs['previous_choice'].transpose(1, 2)[:, None, :, :, None].expand(b, n, k, n, 1)), -1)
         mask = (obs['active'][:, None, None, :] & obs['valid'][:, None, :, None]
                 & ~torch.eye(n, dtype=torch.bool, device=d.device)[None, :, None, :])
-        return self.actor_head(self.actor_body(query, peers, mask)).squeeze(-1)
+        return self.actor_body(query, peers, mask)
 
     def joint_q(self, obs, action, detach_encoder=False):
         # Actor and critic encoders are separate, as in the reference policy.
@@ -283,6 +344,37 @@ class ExplorationActorCritic(BeliefActorCritic):
 class ExplorationPPOActorCritic(ExplorationActorCritic):
     """Same actor and graph topology, with an action-independent state value."""
     architecture = 'polygon_exploration_decision_ppo'
+
+    absolute_architecture = 'polygon_exploration_decision_ppo_absolute'
+
+    def __init__(self, hidden=64, features=GAUSSIAN_FEATURES, *, absolute_positions=False):
+        super().__init__(hidden, features)
+        self.absolute_positions = absolute_positions
+        if absolute_positions:
+            self.architecture = self.absolute_architecture
+            self.actor_body = AttentionActorBody(hidden, time_embedding=False,
+                query_width=GAUSSIAN_FEATURES-2+1+7, peer_width=7, time_index=GAUSSIAN_FEATURES-2)
+
+    def actor_features(self, obs):
+        if not self.absolute_positions:
+            return super().actor_features(obs)
+
+        drones = obs['drones']
+        batch, n, _ = drones.shape
+        regions = obs['beliefs'].shape[1]
+        physical = drones[..., [0, 1, 5, 6, 3]]  # Absolute position, velocity, busy.
+        state = torch.cat((physical[:, :, None].expand(-1, -1, regions, -1),
+                           obs['previous_choice'][..., None], obs['previous'][..., None]), -1)
+        beliefs = obs['beliefs']
+        # Detection flag and observation age belong to individual tracks.
+        region_features = torch.cat((beliefs[..., :10], beliefs[..., 12:]), -1)
+        query = torch.cat((region_features[:, None].expand(-1, n, -1, -1),
+                           obs['time'].reshape(batch, 1, 1, 1).expand(-1, n, regions, -1),
+                           state), -1)
+        peers = state.transpose(1, 2)[:, None].expand(-1, n, -1, -1, -1)
+        mask = (obs['active'][:, None, None, :] & obs['valid'][:, None, :, None]
+                & ~torch.eye(n, dtype=torch.bool, device=drones.device)[None, :, None, :])
+        return self.actor_body(query, peers, mask)
 
     def state_value(self, obs):
         # Previous intentions are observed state; the newly sampled action is not.

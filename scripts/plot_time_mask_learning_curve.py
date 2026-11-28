@@ -1,4 +1,4 @@
-"""Evaluate saved 2.5M checkpoints with the time mask; overlay saved curves."""
+"""Compare drone rescue-site allocation curves with and without the deadline mask."""
 import csv
 import hashlib
 import json
@@ -16,8 +16,8 @@ import torch
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import checkpoint_payload,model_from_checkpoint,evaluate_model,save_checkpoint
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_ppo import checkpoint_payload,model_from_checkpoint,evaluate_model,save_checkpoint
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 
 
 def read(path):

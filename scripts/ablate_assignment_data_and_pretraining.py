@@ -8,9 +8,9 @@ import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 s=Path('scripts/probe_matched_sequential.py').read_text();exec(s[:s.index('\nOriginal=graph.GraphQBody')])
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 from pointmass_rl.graph_critic import GraphQBody
-from pointmass_rl.strike_ppo import allocated_actions as simultaneous,_model_critic_state,_model_observation,save_checkpoint
+from pointmass_rl.final_mission_ppo import allocated_actions as simultaneous,_model_critic_state,_model_observation,save_checkpoint
 from pointmass_rl.assignment_learning import sequential_actions
 root=Path('runs/critic_2x2_factorial');root.mkdir(exist_ok=True);c=replace(c,commit_target=False,decision_interval=1);torch.set_num_threads(1)
 data=np.load('runs/critic_2x2_episode_exploration/experience.npz');A=np.array(data['actions']);Rfixed=np.array(data['returns'],np.float32)
@@ -26,11 +26,11 @@ else:
  for start in range(0,len(A),64):
   worlds=[];schedules=[]
   for i in range(start,min(start+64,len(A))):
-   w=World(c);w.reset(30000+i);schedule=DecisionSchedule(c);schedule.record(w,A[i],w.agent_active,np.eye(2)[A[i]]);w.step(strike_action(A[i]));worlds.append(w);schedules.append(schedule)
+   w=World(c);w.reset(30000+i);schedule=DecisionSchedule(c);schedule.record(w,A[i],w.agent_active,np.eye(2)[A[i]]);w.step(final_mission_action(A[i]));worlds.append(w);schedules.append(schedule)
   while not all(w.done for w in worlds):
    live=[i for i,w in enumerate(worlds) if not w.done]
    with torch.no_grad():action,_=simultaneous(behavior,[worlds[i] for i in live],[schedules[i] for i in live],deterministic=False)
-   for j,i in enumerate(live):worlds[i].step(strike_action(action['target'][j]))
+   for j,i in enumerate(live):worlds[i].step(final_mission_action(action['target'][j]))
   Rdynamic.extend(float(w.score) for w in worlds)
   if (start+64)%512==0:print('Dynamic episodes',min(start+64,len(A)),flush=True)
  Rdynamic=np.array(Rdynamic,np.float32);np.save(root/'dynamic_returns.npy',Rdynamic)

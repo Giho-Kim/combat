@@ -8,9 +8,9 @@ import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 s=Path('scripts/probe_matched_sequential.py').read_text();exec(s[:s.index('\nOriginal=graph.GraphQBody')])
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 from pointmass_rl.graph_critic import GraphQBody
-from pointmass_rl.strike_ppo import allocated_actions as simultaneous,_model_critic_state,_model_observation,save_checkpoint
+from pointmass_rl.final_mission_ppo import allocated_actions as simultaneous,_model_critic_state,_model_observation,save_checkpoint
 from pointmass_rl.assignment_learning import sequential_actions
 root=Path('runs/critic_2x2_factorial');root.mkdir(exist_ok=True);c=replace(c,commit_target=False,decision_interval=1);torch.set_num_threads(1)
 data=np.load('runs/critic_2x2_episode_exploration/experience.npz');A=np.array(data['actions']);Rfixed=np.array(data['returns'],np.float32)

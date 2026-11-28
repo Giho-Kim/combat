@@ -5,8 +5,8 @@ from tempfile import TemporaryDirectory
 import torch
 
 from pointmass_rl.graph_critic import GraphQBody, RelationAttention
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
-from pointmass_rl.strike_ppo import save_checkpoint, model_from_checkpoint, train_target_allocation
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_ppo import save_checkpoint, model_from_checkpoint, train_target_allocation
 from pointmass_rl.env import Config
 
 
@@ -65,7 +65,7 @@ class GraphCriticTests(unittest.TestCase):
         new_action = torch.argsort(tp)[action[:, dp]]
         torch.testing.assert_close(body(pack(*fields), action), body(reordered, new_action), atol=2e-5, rtol=1e-5)
 
-    def test_padding_and_dead_actions_do_not_change_q(self):
+    def test_padding_and_inactive_actions_do_not_change_q(self):
         model = TargetAllocationActorCritic(3, 2)
         fields, action = example(2, 3)
         time, drones, targets, probs, previous = fields

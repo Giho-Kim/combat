@@ -1,10 +1,10 @@
-"""Baselines for strike-target prioritization."""
+"""Baselines for final_mission-target prioritization."""
 import itertools
 
 import numpy as np
 
-from .env import (DAMAGE_REWARD_RATE, SELF_FEATURES, TARGET_FEATURES,
-                  strike_action)
+from .env import (PROGRESS_REWARD_RATE, SELF_FEATURES, TARGET_FEATURES,
+                  final_mission_action)
 
 
 def _records(row, n_targets):
@@ -13,7 +13,7 @@ def _records(row, n_targets):
 
 
 def _current_locks(obs, previous_targets):
-    """A progressing strike stays on the target chosen by this policy last step."""
+    """A progressing final_mission stays on the target chosen by this policy last step."""
     return np.where(obs[:, 1] > 0, previous_targets, -1)
 
 
@@ -37,7 +37,7 @@ class RandomPolicy:
                 else:
                     targets[i] = self.rng.choice(known)
                     self.locked_target[i] = targets[i]
-        return strike_action(targets)
+        return final_mission_action(targets)
 
 
 class HeuristicPolicy:
@@ -67,7 +67,7 @@ class HeuristicPolicy:
                 self.locked_target[i] = -1
                 free.append(i)
 
-        # Allocate whole strike teams. A type-1 target receives two drones;
+        # Allocate whole final_mission teams. A type-1 target receives two drones;
         # other targets receive one. Filled targets leave the candidate set,
         # which spreads the formation whenever useful work remains.
         while free:
@@ -77,10 +77,10 @@ class HeuristicPolicy:
                 if not observers:
                     continue
                 sample = records[observers[0]][j]
-                weighted_life = float(sample[2])
+                weighted_work_units = float(sample[2])
                 # Normalized remaining values uniquely encode the valid cases:
-                # type 1 life 2/1 -> 1/.6, type 2 -> .4, type 3 -> .2.
-                required = 2 if weighted_life > .75 else 1
+                # type 1 work_units 2/1 -> 1/.6, type 2 -> .4, type 3 -> .2.
+                required = 2 if weighted_work_units > .75 else 1
                 needed = max(0, required - assigned[j])
                 if needed == 0 or len(observers) < needed:
                     continue
@@ -88,11 +88,11 @@ class HeuristicPolicy:
                     ((np.linalg.norm(records[i][j, :2]) * self.c.size, i)
                      for i in observers), key=lambda item: item[0])
                 team = [i for _, i in distances[:needed]]
-                eta = np.mean([distance for distance, _ in distances[:needed]]) / self.c.strike_speed
-                if weighted_life > .75:
+                eta = np.mean([distance for distance, _ in distances[:needed]]) / self.c.final_mission_speed
+                if weighted_work_units > .75:
                     per_drone_value = 2.5
                 else:
-                    per_drone_value = weighted_life * 5.0
+                    per_drone_value = weighted_work_units * 5.0
                 priority = per_drone_value * np.power(.99, eta)
                 candidates.append((priority, -eta, j, team))
             if not candidates:
@@ -113,11 +113,11 @@ class HeuristicPolicy:
                 target = int(known[np.argmin(distance)])
                 targets[i] = target
                 self.locked_target[i] = target
-        return strike_action(targets)
+        return final_mission_action(targets)
 
 
 class _CapacityRulePolicy:
-    """Keep approach assignments and fill whole strike teams without overflow."""
+    """Keep approach assignments and fill whole final_mission teams without overflow."""
     def __init__(self, config, seed=0):
         self.c = config
         self.assigned_target = np.full(config.n_agents, -1, dtype=int)
@@ -135,7 +135,7 @@ class _CapacityRulePolicy:
         assigned = np.zeros(self.c.n_targets, dtype=int)
         free = []
 
-        # Approaching drones reserve slots just like strike participants.
+        # Approaching drones reserve slots just like final_mission participants.
         for i in active:
             j = self.assigned_target[i]
             if j >= 0 and records[i][j, 3] > 0:
@@ -171,7 +171,7 @@ class _CapacityRulePolicy:
                 assigned[j] += 1
                 free.remove(i)
 
-        # The fixed five-target scenario has more life slots than drones. In
+        # The fixed five-target scenario has more work_units slots than drones. In
         # smaller configurable scenarios, an excess drone has no idle action.
         # Point it at a live target without reserving an additional slot.
         for i in free:
@@ -179,7 +179,7 @@ class _CapacityRulePolicy:
             if len(available):
                 distances = np.linalg.norm(records[i][available, :2], axis=1)
                 targets[i] = int(available[np.argmin(distances)])
-        return strike_action(targets)
+        return final_mission_action(targets)
 
 
 class NearestTargetPolicy(_CapacityRulePolicy):
@@ -190,17 +190,17 @@ class TypePriorityPolicy(_CapacityRulePolicy):
     """Fill type 1, then type 2, then type 3 teams; use distance within type."""
     def _priority(self, remaining_value):
         if remaining_value >= .5:
-            return 0  # Type 1, whether it has one or two life remaining.
+            return 0  # Type 1, whether it has one or two work_units remaining.
         return 1 if remaining_value > .3 else 2
 
 
 class ApproximateDPPolicy:
     """Centralized model-based assignment planner for the stationary scenario.
 
-    The continuous trajectory is approximated by each drone's predicted strike
+    The continuous trajectory is approximated by each drone's predicted final_mission
     completion time. Feasible joint target assignments are exhaustively scored
-    with the environment's discounted damage rewards. The
-    plan is recomputed only when a target becomes invalid or a strike lock
+    with the environment's discounted progress rewards. The
+    plan is recomputed only when a target becomes invalid or a final_mission lock
     changes it.
     """
     def __init__(self, config, seed=0):
@@ -224,13 +224,13 @@ class ApproximateDPPolicy:
 
     def _completion_delay(self, record, progress):
         if progress > 0:
-            completed = int(round(progress * self.c.strike_steps_per_life))
-            return max(1, self.c.strike_steps_per_life - completed)
+            completed = int(round(progress * self.c.service_steps_per_unit))
+            return max(1, self.c.service_steps_per_unit - completed)
         distance = float(np.linalg.norm(record[:2]) * self.c.size)
         travel = max(1, int(np.ceil(
-            max(0.0, distance - self.c.strike_range)
-            / (self.c.strike_speed * self.c.dt))))
-        return travel + self.c.strike_steps_per_life - 1
+            max(0.0, distance - self.c.final_mission_range)
+            / (self.c.final_mission_speed * self.c.dt))))
+        return travel + self.c.service_steps_per_unit - 1
 
     def _events(self, assignment, active, records, remaining):
         events = []
@@ -238,7 +238,7 @@ class ApproximateDPPolicy:
             members = [i for i in active if assignment[i] == target]
             if not members:
                 continue
-            # Locked strike progress is carried in the self record, not the
+            # Locked final_mission progress is carried in the self record, not the
             # target record.
             delays = sorted(self._completion_delay(
                 records[i][target], self._current_progress[i]) for i in members)
@@ -254,12 +254,12 @@ class ApproximateDPPolicy:
                 events.append((delays[0], float(value)))
         return events
 
-    def _objective(self, assignment, active, records, remaining, damage_so_far,
+    def _objective(self, assignment, active, records, remaining, score_so_far,
                    remaining_steps):
         grouped = {}
         for delay, value in self._events(assignment, active, records, remaining):
             grouped[delay] = grouped.get(delay, 0.0) + value
-        score = float(damage_so_far)
+        score = float(score_so_far)
         objective = 0.0
         total_delay = 0.0
         gamma = self.c.discount_gamma
@@ -269,7 +269,7 @@ class ApproximateDPPolicy:
                 break
             value = grouped[delay]
             objective += (gamma ** (delay - 1)
-                          * DAMAGE_REWARD_RATE * value)
+                          * PROGRESS_REWARD_RATE * value)
             score += value
             total_delay += delay * value
         return objective, score, -total_delay
@@ -283,7 +283,7 @@ class ApproximateDPPolicy:
         remaining = self._remaining_value(records[active[0]])
         if self.initial_total_value is None:
             self.initial_total_value = float(remaining.sum())
-        damage_so_far = self.initial_total_value - float(remaining.sum())
+        score_so_far = self.initial_total_value - float(remaining.sum())
         remaining_steps = int(round(obs[active[0], 0] * self.c.horizon))
         locks = _current_locks(obs, self.plan)
         self._current_progress = obs[:, 1].copy()
@@ -312,7 +312,7 @@ class ApproximateDPPolicy:
             for i, target in zip(free, proposed):
                 candidate[i] = target
             key = self._objective(
-                candidate, active, records, remaining, damage_so_far,
+                candidate, active, records, remaining, score_so_far,
                 remaining_steps)
             if best_key is None or key > best_key:
                 best_key, best_assignment = key, candidate
@@ -351,12 +351,12 @@ class ApproximateDPPolicy:
             self.plan = self._make_plan(obs)
         targets = np.where(self.plan >= 0, self.plan, 0)
         targets = np.where(locks >= 0, locks, targets)
-        return strike_action(targets.astype(int))
+        return final_mission_action(targets.astype(int))
 
 
 class TargetAllocationPolicy:
     def __init__(self, path, config, resolver=True, device='cpu'):
-        from .strike_ppo import model_from_checkpoint
+        from .final_mission_ppo import model_from_checkpoint
         self.model = model_from_checkpoint(path, config, device=device)
         self.model.eval()
         self.c = config
@@ -364,12 +364,12 @@ class TargetAllocationPolicy:
         self.reset()
 
     def reset(self):
-        from .strike_ppo import DecisionSchedule
+        from .final_mission_ppo import DecisionSchedule
         self.schedule = DecisionSchedule(self.c)
 
     def predict(self, obs, world):
         import torch
-        from .strike_ppo import scheduled_action
+        from .final_mission_ppo import scheduled_action
         with torch.no_grad():
             action, _ = scheduled_action(self.model, world, self.schedule, resolver=self.resolver)
             return action

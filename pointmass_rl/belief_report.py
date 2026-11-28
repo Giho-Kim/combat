@@ -18,11 +18,11 @@ def frame(world, observation, chosen=None):
                                mean=(record[:2] * world.c.size).tolist(),
                                goal=belief.goals[slot].tolist(),
                                count=float(record[9]), uncertainty=float(record[2] + record[4]),
-                               type_prob=record[5:8].tolist(), life=float(record[8] * 2),
+                               type_prob=record[5:8].tolist(), work_units=float(record[8] * 2),
                                background_mass=float(record[14]) if len(record) > 14 else 0.))
     truth = [dict(position=hidden.targets[j].tolist(), formation=int(hidden.target_formation[j])+1,
                   type=int(hidden.target_type[j]),
-                  life=int(hidden.target_life[j]), active=bool(hidden.active[j]))
+                  work_units=int(hidden.target_work_units[j]), active=bool(hidden.active[j]))
              for j in np.flatnonzero(hidden.target_exists)]
     metrics = world.metrics()
     # A fixed scale shows redistribution as well as depletion. The bounded
@@ -45,7 +45,7 @@ def frame(world, observation, chosen=None):
                 score=metrics['score'], threshold=metrics['success_threshold'],
                 team_return=metrics['team_return'], discovery_fraction=metrics['discovery_fraction'],
                 unseen_expected_count=metrics['unseen_expected_count'],
-                initial_intel=belief.initial_intel,
+                initial_intel=belief.initial_report,
                 initial_expected_count=belief.initial_expected_count,
                 reported_unseen_expected_count=metrics.get('reported_unseen_expected_count'),
                 report_center_mean=(belief.report.center_mean.tolist() if belief.report else None),
@@ -66,7 +66,7 @@ input[type=range]{width:min(320px,55vw)}label{white-space:nowrap}canvas{width:mi
 </style>
 <h1>Belief mode · 평가 리플레이</h1>
 <p id="motion"></p>
-<p>파란 칸은 미발견 표적의 예상 밀도입니다. 보라색 십자는 표적별 초기 보고 위치입니다. 빈 곳을 확인하거나 개체를 발견하면 분포가 갱신됩니다. 노란 원은 발견 개체이며 실제 위치는 확인용 토글로 표시합니다.</p>
+<p>파란 칸은 미발견 작업 지점의 예상 밀도입니다. 보라색 십자는 작업 지점별 초기 보고 위치입니다. 빈 곳을 확인하거나 개체를 발견하면 분포가 갱신됩니다. 노란 원은 발견 개체이며 실제 위치는 확인용 토글로 표시합니다.</p>
 <div class="controls"><select id="policy"></select><button id="play">재생</button><input id="time" type="range" min="0" value="0"><span id="step"></span><label><input id="truth" type="checkbox"> 실제 위치 보기</label></div>
 <div class="controls"><label><input id="belief" type="checkbox" checked> 미발견 belief</label><label><input id="sensor" type="checkbox" checked> 센서 범위</label><span id="belief-status"></span></div>
 <canvas id="map" width="800" height="800"></canvas><div id="stats"></div>
@@ -129,17 +129,17 @@ function draw(){const frames=data.runs[sel.value],index=Number(slider.value),f=f
     `미발견 belief 잔량 ${(100*f.unseen_expected_count/initial).toFixed(1)}% (초기 대비)`:
     '구역별 합계 표시 · 세부 belief는 새 평가부터 기록됩니다';
   if(f.background_search_mass!=null)document.getElementById('belief-status').textContent=
-    `보고 표적 미발견 예상 ${f.reported_unseen_expected_count.toFixed(2)}대 · 기본 탐색 질량 ${f.background_search_mass.toFixed(2)} · 보고 표적 모두 발견 확률 ${(100*f.all_reported_found_probability).toFixed(1)}%`;
+    `보고 작업 지점 미발견 예상 ${f.reported_unseen_expected_count.toFixed(2)}대 · 기본 탐색 질량 ${f.background_search_mass.toFixed(2)} · 보고 작업 지점 모두 발견 확률 ${(100*f.all_reported_found_probability).toFixed(1)}%`;
   for(const item of f.components){if(item.kind!=='track')continue;
     const [x,y]=xy(item.mean);ctx.fillStyle='#ffd166';ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
     ctx.beginPath();ctx.arc(x,y,6,0,2*Math.PI);ctx.fill();ctx.stroke();
     const type=item.type_prob.indexOf(Math.max(...item.type_prob))+1;
-    ctx.fillStyle='#ffd166';ctx.fillText(`Type ${type} · L${item.life.toFixed(0)}`,x+9,y-7)}
+    ctx.fillStyle='#ffd166';ctx.fillText(`Type ${type} · 잔여 ${item.work_units.toFixed(0)}`,x+9,y-7)}
   if(truthToggle.checked){const formationColors=['#ff6778','#ffb347'];
     for(let k=0;k<f.formation_centers.length;k++){const [x,y]=xy(f.formation_centers[k]);
       ctx.strokeStyle=formationColors[k%formationColors.length];ctx.lineWidth=1.5;ctx.setLineDash([6,4]);
       ctx.beginPath();ctx.arc(x,y,data.config.target_formation_radius*scale,0,2*Math.PI);ctx.stroke();ctx.setLineDash([]);
-      ctx.fillStyle=ctx.strokeStyle;ctx.font='bold 16px system-ui';ctx.fillText(`편제 ${k+1}`,x+8,y-11)}
+      ctx.fillStyle=ctx.strokeStyle;ctx.font='bold 16px system-ui';ctx.fillText(`그룹 ${k+1}`,x+8,y-11)}
     for(let j=0;j<f.truth.length;j++){const item=f.truth[j];if(!item.active)continue;
       const [x,y]=xy(item.position);ctx.strokeStyle=formationColors[(item.formation-1)%formationColors.length];ctx.lineWidth=3;
       ctx.beginPath();ctx.moveTo(x-7,y-7);ctx.lineTo(x+7,y+7);ctx.moveTo(x+7,y-7);ctx.lineTo(x-7,y+7);ctx.stroke();

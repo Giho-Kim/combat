@@ -6,8 +6,8 @@ import torch
 
 from pointmass_rl.attention_actor import PeerCrossAttention
 from pointmass_rl.env import Config, World
-from pointmass_rl.strike_ppo import model_from_checkpoint, save_checkpoint, train_target_allocation
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_ppo import model_from_checkpoint, save_checkpoint, train_target_allocation
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 
 
 def example(n, t):
@@ -60,7 +60,7 @@ class AttentionActorTests(unittest.TestCase):
             restored = model_from_checkpoint(path, Config(n_agents=3, min_agents=3,
                                                          n_targets=4, min_targets=4))
             torch.testing.assert_close(restored.actor_logits(obs), model.actor_logits(obs))
-            from pointmass_rl.strike_ppo import load_checkpoint
+            from pointmass_rl.final_mission_ppo import load_checkpoint
             with self.assertRaisesRegex(ValueError, 'Actor time architecture differs'):
                 load_checkpoint(path, TargetAllocationActorCritic(4, 3))
 

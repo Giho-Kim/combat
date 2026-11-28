@@ -11,9 +11,9 @@ from dataclasses import replace
 
 import numpy as np
 
-from .env import Config, World, DAMAGE_REWARD_RATE, split_strike_action
+from .env import Config, World, PROGRESS_REWARD_RATE, split_final_mission_action
 from .navigation import DubinsPath, lawnmower_waypoints, point_path
-from .belief_intel import ReportPosterior
+from .belief_report_posterior import ReportPosterior
 from .belief_sensor import detection_probabilities, cell_detection_probabilities, union_detection_probabilities
 from .gaussian_belief import GaussianTargetBelief
 
@@ -25,7 +25,7 @@ class _BeliefLayoutWorld(World):
     """Keep belief-mode spawns inside the search area, including members."""
     def _reset_once(self, seed, success_threshold=None, evaluation_task=None):
         super()._reset_once(seed, success_threshold, evaluation_task)
-        self.initial_intel = None
+        self.initial_report = None
         if not self.c.belief_initial_intel:
             return self.observation.copy()
         c = self.c
@@ -39,10 +39,10 @@ class _BeliefLayoutWorld(World):
         counts = np.bincount(self.target_type[ids], minlength=4)[1:4]
         # The simulator draws a latent scale once per episode. Sensors and
         # policy inputs never receive its realized value.
-        self._intel_true_sigma = float(self.rng.lognormal(
+        self._report_true_sigma = float(self.rng.lognormal(
             np.log(c.belief_intel_sigma), c.belief_intel_log_sigma_std))
         for _ in range(1000):
-            center = reported + self.rng.normal(0., self._intel_true_sigma, 2)
+            center = reported + self.rng.normal(0., self._report_true_sigma, 2)
             if not self._valid_spawn(center, c.min_spawn_distance):
                 continue
             occupied = list(self.targets[self.target_exists & (self.target_formation != 0)])
@@ -63,7 +63,7 @@ class _BeliefLayoutWorld(World):
             raise RuntimeError('Could not place the reported formation within its uncertainty area')
         # This packet is the complete public report. It has no simulator IDs,
         # true centre, true sigma, true positions, or F2 composition.
-        self.initial_intel = dict(position=reported.tolist(), type_counts=counts.tolist(),
+        self.initial_report = dict(position=reported.tolist(), type_counts=counts.tolist(),
                                   sigma_hint=c.belief_intel_sigma,
                                   log_sigma_std=c.belief_intel_log_sigma_std,
                                   member_radius=c.target_formation_radius)
@@ -114,7 +114,7 @@ class _BeliefLayoutWorld(World):
                                 sigma_hint=c.belief_intel_sigma,
                                 log_sigma_std=c.belief_intel_log_sigma_std))
         self.formation_centers[0] = self.targets[ids].mean(axis=0)
-        self.initial_intel = dict(objects=reports,
+        self.initial_report = dict(objects=reports,
             position=np.mean(centers, axis=0).tolist(),
             type_counts=np.bincount(self.target_type[ids], minlength=4)[1:4].tolist())
 
@@ -127,7 +127,7 @@ class _BeliefLayoutWorld(World):
             point = self.rng.uniform(lo, hi, 2)
             if np.linalg.norm(point-self.base) < min_base_distance:
                 continue
-            # Avoid a friendly centre from which the configured separation
+            # Avoid a agent starting centre from which the configured separation
             # cannot fit anywhere inside the smaller search area.
             if (c.formation_layout == 'configured' and min_base_distance > c.min_spawn_distance
                     and np.linalg.norm(corners-point, axis=1).max() < c.formation_separation):
@@ -145,12 +145,12 @@ class TargetBelief:
     """Stable component slots: spatial intensity cells, then discovered tracks.
 
     Records: mean xy, covariance xx/xy/yy, type probabilities (3), expected
-    life/2, expected object count, identified flag, time since observation,
+    work_units/2, expected object count, identified flag, time since observation,
     controller destination xy. The latter exposes the current support point.
     Positions/covariances use map-normalized coordinates. One intensity cell
     may contain any number of objects; one identified track contains one.
     """
-    def __init__(self, config, initial_intel=None):
+    def __init__(self, config, initial_report=None):
         self.c = config
         g, s = config.belief_grid, config.belief_subcells
         self.cells = g * g
@@ -164,9 +164,9 @@ class TargetBelief:
         expected = ((config.n_targets + config.min_targets) / 2
                     if config.randomize_counts else config.n_targets)
         self.weights = np.full(self.points.shape[:-1], expected / (g*g*s*s))
-        self.initial_intel = initial_intel
-        self.report = (ReportPosterior(config, self.points, initial_intel)
-                       if initial_intel is not None else None)
+        self.initial_report = initial_report
+        self.report = (ReportPosterior(config, self.points, initial_report)
+                       if initial_report is not None else None)
         if self.report is not None:
             self.weights = self.report.type_weights.sum(-1)
         self.initial_expected_count = float(self.weights.sum())
@@ -191,13 +191,13 @@ class TargetBelief:
         else:
             self.weights *= 1 - np.clip(detection_map, 0, 1)
         variance = max((self.c.position_noise / self.c.size) ** 2, 1e-12)
-        for handle, position, typ, life in observations:
+        for handle, position, typ, work_units in observations:
             measurement = np.clip(position / self.c.size, 0, 1)
             if handle not in known:
                 if len(self.tracks) >= self.c.n_targets:
                     raise RuntimeError('Detected objects exceed configured capacity')
                 track = dict(handle=handle, mean=measurement, variance=variance,
-                             type=int(typ), life=int(life), seen=time)
+                             type=int(typ), work_units=int(work_units), seen=time)
                 self.tracks.append(track)
                 known[handle] = track
             else:
@@ -205,7 +205,7 @@ class TargetBelief:
                 gain = track['variance'] / (track['variance'] + variance)
                 track['mean'] = track['mean'] + gain * (measurement - track['mean'])
                 track['variance'] *= 1 - gain
-                track.update(type=int(typ), life=int(life), seen=time)
+                track.update(type=int(typ), work_units=int(work_units), seen=time)
         self.refresh(time)
 
     def refresh(self, time):
@@ -221,9 +221,9 @@ class TargetBelief:
             covariance = (centered * p[:, None]).T @ centered
             types = (self.report.type_weights[j].sum(0) / mass if self.report is not None
                      else np.full(3, 1/3))
-            expected_life = float(types @ np.array([2., 1., 1.]))
+            expected_work_units = float(types @ np.array([2., 1., 1.]))
             self.records[j, :12] = [*mean, covariance[0, 0], covariance[0, 1], covariance[1, 1],
-                               *types, expected_life/2, mass, 0, 0]
+                               *types, expected_work_units/2, mass, 0, 0]
             self.valid[j] = True
             # Choose a support point, not a centroid inside an already cleared
             # hole. Equal-priority support points use stable geometric order.
@@ -243,9 +243,9 @@ class TargetBelief:
             j = self.cells + i
             typ = np.eye(3)[track['type'] - 1]
             self.records[j, :12] = [*track['mean'], track['variance'], 0, track['variance'],
-                               *typ, track['life']/2, 1, 1,
+                               *typ, track['work_units']/2, 1, 1,
                                (time-track['seen']) / self.c.horizon]
-            self.valid[j] = track['life'] > 0
+            self.valid[j] = track['work_units'] > 0
             self.goals[j] = track['mean'] * self.c.size
         self.records[self.valid, 12:14] = self.goals[self.valid] / self.c.size
 
@@ -275,11 +275,11 @@ class BeliefWorld:
         w.coverage.fill(False)
         w.mem_pos.fill(0)
         w.mem_type.fill(0)
-        w.mem_life.fill(0)
+        w.mem_work_units.fill(0)
         self.sensor_rng = np.random.default_rng(np.random.SeedSequence(seed).spawn(1)[0])
         belief_class = (GaussianTargetBelief if self.c.belief_representation == 'gaussian_uniform'
                         else TargetBelief)
-        self.belief = belief_class(self.c, w.initial_intel)
+        self.belief = belief_class(self.c, w.initial_report)
         self.previous = np.zeros((self.n, self.action_count), dtype=np.float32)
         self.previous_choice = np.zeros_like(self.previous)
         self.chosen = np.full(self.n, -1, dtype=int)
@@ -345,7 +345,7 @@ class BeliefWorld:
         ids = sorted(np.flatnonzero(detected), key=lambda j:tuple(w.targets[j]))
         for j in ids:
             position = w.targets[j] + self.sensor_rng.normal(0, self.c.position_noise, 2)
-            observations.append((int(j), position, int(w.target_type[j]), int(w.target_life[j])))
+            observations.append((int(j), position, int(w.target_type[j]), int(w.target_work_units[j])))
         if continuous:
             # The background retains this continuous likelihood as history.
             # Capture poses now, rather than closing over the mutable world.
@@ -384,9 +384,9 @@ class BeliefWorld:
             mask[:, j] = False
             mask[i, j] = True
         for j in range(self.belief.cells, self.belief.cells + len(self.belief.tracks)):
-            life = int(round(self.belief.records[j, 8]*2))
+            work_units = int(round(self.belief.records[j, 8]*2))
             occupied = (locks == j).sum()
-            if occupied >= life:
+            if occupied >= work_units:
                 mask[:, j] = locks == j
         decision = w.agent_active & (locks < 0)
         for i in range(self.n):
@@ -410,9 +410,9 @@ class BeliefWorld:
         alive = w.agent_active.astype(np.float32)
         # Heading is required because it affects the next observation footprint.
         drones = np.column_stack((w.pos/self.c.size, alive,
-                                  w.strike_participants.any(0),
-                                  w.agent_strike_progress/self.c.strike_steps_per_life,
-                                  w.vel/self.c.strike_speed, np.cos(w.heading), np.sin(w.heading))).astype(np.float32)
+                                  w.final_mission_participants.any(0),
+                                  w.agent_final_mission_progress/self.c.service_steps_per_unit,
+                                  w.vel/self.c.final_mission_speed, np.cos(w.heading), np.sin(w.heading))).astype(np.float32)
         drones *= alive[:, None]
         mask, decision = self.action_mask()
         return dict(time=np.array([(self.c.horizon-w.t)/self.c.horizon], dtype=np.float32),
@@ -424,7 +424,7 @@ class BeliefWorld:
         """Follow an oriented path, then sweep a selected exploration region."""
         w, c = self._world, self.c
         radius = c.belief_turn_radius
-        budget = c.strike_speed*c.dt
+        budget = c.final_mission_speed*c.dt
         if not self.belief.valid[component]:
             self.navigation[i] = None
             w.last_goal[i] = w.pos[i]
@@ -437,12 +437,12 @@ class BeliefWorld:
                        sweeping=False, waypoints=[], index=0, arrived=False)
             self.navigation[i] = nav
         elif (not is_region or not c.belief_lawnmower
-              or (c.belief_initial_intel and not nav['sweeping'])) and np.linalg.norm(goal-nav['goal']) > c.strike_range*.25:
+              or (c.belief_initial_intel and not nav['sweeping'])) and np.linalg.norm(goal-nav['goal']) > c.final_mission_range*.25:
             nav['goal'] = goal.copy()
             nav['path'] = None
             nav['arrived'] = False
 
-        if not is_region and w.strike_participants[:, i].any():
+        if not is_region and w.final_mission_participants[:, i].any():
             w.last_goal[i] = nav['goal']
             return
 
@@ -513,7 +513,7 @@ class BeliefWorld:
         w, c = self._world, self.c
         if w.done:
             raise RuntimeError('Episode ended; call reset()')
-        proposed = split_strike_action(action)
+        proposed = split_final_mission_action(action)
         if proposed.shape != (self.n,) or not np.issubdtype(proposed.dtype, np.integer) or np.any((proposed<0)|(proposed>=self.action_count)):
             raise ValueError('Expected one valid belief component ID per drone')
         mask, decision = self.action_mask()
@@ -545,19 +545,19 @@ class BeliefWorld:
         w.target_assignment.fill(False)
         selected = np.flatnonzero(w.agent_active & (raw>=0))
         w.target_assignment[raw[selected], selected] = True
-        w.last_damage_by_agent.fill(0)
+        w.last_progress_value_by_agent.fill(0)
         w.t += 1
-        w._resolve_strikes(raw)
+        w._resolve_final_missions(raw)
         # Task results are observed events, including the final participant's
         # report. No hidden object state is consulted by the learner.
         for track in self.belief.tracks:
             j = track['handle']
             if np.any(active_before & ~w.agent_active & (raw == j)):
-                track.update(life=int(w.target_life[j]), seen=w.t)
-        w.target_assignment[~w.target_exists | w.destroyed] = False
+                track.update(work_units=int(w.target_work_units[j]), seen=w.t)
+        w.target_assignment[~w.target_exists | w.target_completed] = False
         w.vel[~w.agent_active] = 0
         w.last_agent_terminated = active_before & ~w.agent_active
-        reward = float(DAMAGE_REWARD_RATE*w.last_damage_by_agent.sum())
+        reward = float(PROGRESS_REWARD_RATE*w.last_progress_value_by_agent.sum())
         w.rewards_total += reward
         w.discounted_rewards_total += c.discount_gamma**(w.t-1)*reward
         if w.score>0 and w.first_score_step is None:

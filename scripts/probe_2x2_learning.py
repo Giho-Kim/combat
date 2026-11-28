@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 from pointmass_rl.graph_critic import GraphQBody
 out=Path('runs/critic_2x2_learning_probe');d=np.load(out/'dataset.npz');torch.set_num_threads(1)
 S=torch.tensor(d['states'],device='cuda');O=torch.tensor(d['observations'],device='cuda');Y=torch.tensor(d['returns'],device='cuda');A=torch.tensor(d['actions'],device='cuda');results=[]

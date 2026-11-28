@@ -1,4 +1,4 @@
-"""Render saved actor interventions and real decision-context case studies."""
+"""Render drone rescue-site choices and saved actor interventions."""
 import csv
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.dissect_actor_attention import scores,probabilities,csv_file
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import model_from_checkpoint
+from pointmass_rl.final_mission_ppo import model_from_checkpoint
 
 OUT=ROOT/'runs/target_allocation_attention_anatomy'
 
@@ -67,8 +67,8 @@ def main():
         c['previous_choices']=history
     (OUT/'contexts.json').write_text(json.dumps(contexts))
     features=load_csv('interventions.csv');heads=load_csv('heads.csv')
-    phases=['initial','negotiation','travel','after_consumption']
-    feature_names={'target_position':'Target position','target_type':'Target type','target_life':'Target life',
+    phases=['initial','negotiation','travel','after_work_progress']
+    feature_names={'target_position':'Target position','target_type':'Target type','target_work_units':'Target work_units',
         'own_previous_probability':'Own previous probabilities','own_previous_choice':'Own previous choice',
         'peer_previous_intent':'Peers’ previous intentions','peer_position':'Peer positions',
         'peer_records_initial':'All peer details reset','peer_records_mean':'Only average peer details kept'}
@@ -78,7 +78,7 @@ def main():
         for stage in phases] for feature in names])
     im=axes[0].imshow(matrix,cmap='YlOrRd',vmin=0,vmax=70,aspect='auto')
     axes[0].set_yticks(range(len(names)),[feature_names[n] for n in names])
-    axes[0].set_xticks(range(4),['Initial','Steps 1–10','Travel','After consume'],rotation=15)
+    axes[0].set_xticks(range(4),['Initial','Steps 1–10','Travel','After work progress'],rotation=15)
     for i in range(len(names)):
         for j in range(4):axes[0].text(j,i,f'{matrix[i,j]:.1f}%',ha='center',va='center',fontsize=9)
     axes[0].set_title('Choices changed after input intervention')
@@ -95,7 +95,7 @@ def main():
     rows=load_csv('controlled_probes.csv');groups={}
     for row in rows:groups.setdefault((row['context'],row['target']),{})[row['intervention']]=row
     pairs=[('target_nearer','target_farther','Target 20% nearer vs 20% farther'),
-        ('type_2','type_3','Type 2 vs Type 3, same life'),
+        ('type_2','type_3','Type 2 vs Type 3, same work_units'),
         ('own_stay','own_other','Own previous intention: same vs another target'),
         ('peer_same','peer_other','Peer intention: same vs another target'),
         ('claiming_peer_nearer','claiming_peer_farther','Claiming peer: nearer vs farther')]
@@ -145,14 +145,14 @@ def main():
         and c['types'][choices[i]]<c['types'][c['nearest']] and choices[i]==c['executed_choice']
         and c['types'][int(np.where(available[i],changed['target_type'][i],-np.inf).argmax())]>c['types'][choices[i]])
     history_changed=changed['own_previous_probability']
-    candidates=[i for i,c in enumerate(contexts) if c['stage'] in ('travel','after_consumption')
+    candidates=[i for i,c in enumerate(contexts) if c['stage'] in ('travel','after_work_progress')
         and int(np.where(available[i],history_changed[i],-np.inf).argmax())!=choices[i]]
     early=[]
     for i in candidates:
         if contexts[i]['stage']!='travel' or contexts[i]['step']>40:continue
         alternative=int(np.where(available[i],history_changed[i],-np.inf).argmax())
         distances=np.linalg.norm(q[i,[choices[i],alternative],:2],axis=-1)*config.size
-        eta=np.maximum(1,np.ceil(np.maximum(distances-config.strike_range,0)/(config.strike_speed*config.dt)))+config.strike_steps_per_life-1
+        eta=np.maximum(1,np.ceil(np.maximum(distances-config.final_mission_range,0)/(config.final_mission_speed*config.dt)))+config.service_steps_per_unit-1
         if (eta<=config.horizon-contexts[i]['step']).all():early.append(i)
     history=max(early or candidates,key=lambda i:prob[i,choices[i]])
     cases=[dict(name='Initial: type and geometry',index=initial,

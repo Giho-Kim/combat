@@ -7,9 +7,9 @@ import torch
 from torch import nn
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 s=Path('scripts/probe_matched_sequential.py').read_text();exec(s[:s.index('\nOriginal=graph.GraphQBody')])
-from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
 from pointmass_rl.graph_critic import GraphQBody
-from pointmass_rl.strike_ppo import _model_critic_state,_model_observation,DecisionSchedule
+from pointmass_rl.final_mission_ppo import _model_critic_state,_model_observation,DecisionSchedule
 out=Path('runs/critic_2x2_learned_policy_improvement');out.mkdir(exist_ok=True);c.save(out/'config.json');torch.set_num_threads(1);torch.manual_seed(7)
 data=np.load('runs/critic_2x2_episode_exploration/experience.npz');actions=torch.tensor(data['actions'],device='cuda');returns=torch.tensor(data['returns'],dtype=torch.float32,device='cuda');m=TargetAllocationActorCritic(2,2);states=[];initial=[];worlds=[]
 for i in range(len(actions)):

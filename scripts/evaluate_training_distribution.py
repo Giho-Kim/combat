@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pointmass_rl.env import Config, World, DAMAGE_REWARD_RATE, SUCCESS_BONUS
+from pointmass_rl.env import Config, World, PROGRESS_REWARD_RATE, SUCCESS_BONUS
 from pointmass_rl.policies import NearestTargetPolicy, TypePriorityPolicy
-import pointmass_rl.strike_ppo as ppo
+import pointmass_rl.final_mission_ppo as ppo
 from pointmass_rl.validation_oracle import physical_optimum
 
 
@@ -47,9 +47,9 @@ def evaluate_job(run, checkpoint, mode, episodes, seed):
             if mode == 'oracle':
                 if SUCCESS_BONUS != 0:
                     raise ValueError('Oracle return conversion needs review for nonzero bonus')
-                damage = physical_optimum(world)
-                metrics = dict(team_return=DAMAGE_REWARD_RATE * damage,
-                               mission_success=bool(damage >= threshold), score=damage)
+                progress = physical_optimum(world)
+                metrics = dict(team_return=PROGRESS_REWARD_RATE * progress,
+                               mission_success=bool(progress >= threshold), score=progress)
             else:
                 schedule = ppo.DecisionSchedule(config)
                 policy = (NearestTargetPolicy(config) if mode == 'nearest' else
@@ -66,7 +66,7 @@ def evaluate_job(run, checkpoint, mode, episodes, seed):
             rows.append(dict(seed=seed + episode, B=float(threshold),
                              team_return=float(metrics['team_return']),
                              mission_success=bool(metrics['mission_success']),
-                             damage=float(metrics['score'])))
+                             completion_score=float(metrics['score'])))
     return rows
 
 
@@ -160,7 +160,7 @@ def main():
     manifest=dict(run=str(args.run.resolve()),episodes=args.episodes,seed=args.seed,
                   reset='world.reset(seed): unconditioned training distribution',
                   score_priority='raw actor logit, fixed within each resolver call',
-                  oracle='physical damage upper bound converted to undiscounted return',
+                  oracle='physical upper bound on progress value converted to undiscounted return',
                   checkpoints=[str(p) for p in checkpoints],config=json.loads((args.run/'config.json').read_text()))
     manifest_path=args.out/'manifest.json'
     if manifest_path.exists():

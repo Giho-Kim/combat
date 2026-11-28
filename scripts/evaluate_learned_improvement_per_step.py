@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 import torch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-import pointmass_rl.strike_ppo as trainer
-from pointmass_rl.env import strike_action
+import pointmass_rl.final_mission_ppo as trainer
+from pointmass_rl.env import final_mission_action
 import numpy as np
 from copy import deepcopy
 from dataclasses import replace
@@ -13,8 +13,8 @@ sys.argv=['evaluation',str(p.parent)];src=Path('scripts/evaluate_2x2_failures.py
 src=src.replace('schedule=DecisionSchedule(c);first=None',"""shift=rng.uniform(-10,10,2);w.pos+=shift;w.targets+=shift
    if rng.random()<.5:w.pos[:]=w.pos[::-1].copy()
    if rng.random()<.5:
-    w.targets[:]=w.targets[::-1].copy();w.target_type[:]=w.target_type[::-1].copy();w.target_life[:]=w.target_life[::-1].copy()
-   w.mem_type[:]=w.target_type;w.mem_life[:]=w.target_life
+    w.targets[:]=w.targets[::-1].copy();w.target_type[:]=w.target_type[::-1].copy();w.target_work_units[:]=w.target_work_units[::-1].copy()
+   w.mem_type[:]=w.target_type;w.mem_work_units[:]=w.target_work_units
    schedule=DecisionSchedule(c);first=None""")
 src=src.replace("root/'failure_cases.json'","root/'per_step_failure_cases.json'")
 src=src.replace("c=Config.load(out/'config.json');", "c=replace(Config.load(out/'config.json'),commit_target=False,decision_interval=1);")

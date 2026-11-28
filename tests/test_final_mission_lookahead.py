@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 
 from pointmass_rl.env import Config, World
-from pointmass_rl.strike_lookahead import (assignment_values, counterfactual_credit,
+from pointmass_rl.final_mission_lookahead import (assignment_values, counterfactual_credit,
                                          completion_steps, deadline_action_mask)
 
 
@@ -13,7 +13,7 @@ class LookaheadCreditTests(unittest.TestCase):
         self.world.pos[:] = [10, 10]
         self.world.targets[:] = [[20, 10], [20, 11], [20, 12], [20, 13], [20, 14]]
         self.world.target_type[:] = [1, 1, 2, 2, 3]
-        self.world.target_life[:] = [2, 2, 1, 1, 1]
+        self.world.target_work_units[:] = [2, 2, 1, 1, 1]
 
     def test_capacity_and_inactive_drones(self):
         crowded, spread = assignment_values(self.world, [[0]*5, [0, 0, 1, 1, 2]])
@@ -38,7 +38,7 @@ class LookaheadCreditTests(unittest.TestCase):
         self.assertGreater(credit[2], credit[0])
 
     def test_training_smoke(self):
-        from pointmass_rl.strike_ppo import train_target_allocation
+        from pointmass_rl.final_mission_ppo import train_target_allocation
         import torch
         config = Config(n_agents=2, min_agents=2, n_targets=3, min_targets=3,
                         horizon=4, gae_lambda=1.)
@@ -50,24 +50,24 @@ class LookaheadCreditTests(unittest.TestCase):
     def test_deadline_mask_boundary_fallback_and_locked_progress(self):
         world = self.world
         world.t = 90
-        world.targets[0] = world.pos[0] + [world.c.strike_speed, 0]
-        world.targets[1] = world.pos[0] + [2 * world.c.strike_speed, 0]
+        world.targets[0] = world.pos[0] + [world.c.final_mission_speed, 0]
+        world.targets[1] = world.pos[0] + [2 * world.c.final_mission_speed, 0]
         available = np.ones((5, 5), dtype=bool)
         mask = deadline_action_mask(world, available)
         self.assertTrue(mask[:, 0].all())
         self.assertFalse(mask[:, 1:].any())
         world.t = 99
         np.testing.assert_array_equal(deadline_action_mask(world, available), available)
-        world.strike_participants[1, 0] = True
-        world.agent_strike_progress[0] = 9
+        world.final_mission_participants[1, 0] = True
+        world.agent_final_mission_progress[0] = 9
         self.assertEqual(completion_steps(world)[0, 1], 1)
         self.assertEqual(np.flatnonzero(deadline_action_mask(world, available)[0]).tolist(), [1])
 
     def test_checkpoint_preserves_execution_mask(self):
         from tempfile import TemporaryDirectory
         from pathlib import Path
-        from pointmass_rl.strike_ppo import save_checkpoint, model_from_checkpoint
-        from pointmass_rl.strike_target_actor import TargetAllocationActorCritic
+        from pointmass_rl.final_mission_ppo import save_checkpoint, model_from_checkpoint
+        from pointmass_rl.final_mission_target_actor import TargetAllocationActorCritic
         model = TargetAllocationActorCritic(5, 5)
         model.training_settings = {'deadline_mask': True}
         self.world.targets[0] = [90, 90]

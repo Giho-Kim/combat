@@ -8,7 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from pointmass_rl.env import Config, strike_action, target_remaining_value
+from pointmass_rl.env import Config, final_mission_action, target_remaining_value
 from pointmass_rl.exploration import ExplorationActorCritic, PolygonExplorationWorld
 from pointmass_rl.belief_policy import stack_observations
 from pointmass_rl.belief_training import load_belief_checkpoint, save_belief_checkpoint
@@ -58,10 +58,10 @@ class PolygonExplorationTests(unittest.TestCase):
         world = self.world()
         hidden = world._world
         hidden.discovered.fill(False)
-        life, active = hidden.target_life.copy(), hidden.agent_active.copy()
+        work_units, active = hidden.target_work_units.copy(), hidden.agent_active.copy()
         target = np.flatnonzero(hidden.target_exists)[0]
-        expected = target_remaining_value(hidden.target_type[target], hidden.target_life[target])
-        action = strike_action(np.arange(world.n))
+        expected = target_remaining_value(hidden.target_type[target], hidden.target_work_units[target])
+        action = final_mission_action(np.arange(world.n))
         def detect():
             hidden.discovered[target] = True
         with patch.object(world, '_sense', side_effect=detect):
@@ -69,22 +69,22 @@ class PolygonExplorationTests(unittest.TestCase):
             _, repeated, _, _, _ = world.step(action)
         self.assertEqual(first, expected)
         self.assertEqual(repeated, 0.)
-        self.assertEqual(info['consumed_objects'], 0)
-        np.testing.assert_array_equal(hidden.target_life, life)
+        self.assertEqual(info['completed_sites'], 0)
+        np.testing.assert_array_equal(hidden.target_work_units, work_units)
         np.testing.assert_array_equal(hidden.agent_active, active)
         self.assertEqual(world.observation()['mask'].shape[-1], 64)
 
     def test_completion_unlocks_for_new_selection(self):
         world = self.world()
         action = np.arange(world.n)
-        world.step(strike_action(action))
+        world.step(final_mission_action(action))
         obs = world.observation()
         self.assertFalse(obs['decision'].any())
         np.testing.assert_array_equal(obs['mask'].sum(-1), 1)
         for i, nav in enumerate(world.navigation):
             nav.update(index=0, path=None,
                        waypoints=[(world._world.pos[i].copy(), world._world.heading[i])])
-        world.step(strike_action(action))
+        world.step(final_mission_action(action))
         self.assertTrue(all(nav is None for nav in world.navigation))
         self.assertTrue(world.observation()['decision'].all())
         self.assertTrue(world.observation()['mask'].all())
@@ -124,7 +124,7 @@ class PolygonExplorationTests(unittest.TestCase):
         rng.random.return_value = np.zeros((world.n, len(w.targets)))
         world.sensor_rng = rng
         with patch.object(world, '_navigate_polygon'):
-            obs, reward, _, _, _ = world.step(strike_action(np.zeros(world.n, dtype=int)))
+            obs, reward, _, _, _ = world.step(final_mission_action(np.zeros(world.n, dtype=int)))
         self.assertTrue(w.discovered[0])
         self.assertGreater(reward, 0)
         self.assertTrue(any(track['handle'] == 0 for track in world.belief.tracks))
@@ -150,7 +150,7 @@ class PolygonExplorationTests(unittest.TestCase):
         first = world.observation()
         world._world.targets[:] = 99.
         world._world.target_type[:] = 3
-        world._world.target_life[:] = 1
+        world._world.target_work_units[:] = 1
         second = world.observation()
         for key in first:
             np.testing.assert_array_equal(first[key], second[key], err_msg=key)
@@ -170,7 +170,7 @@ class PolygonExplorationTests(unittest.TestCase):
     def test_all_discovered_terminates(self):
         world = self.world()
         with patch.object(world, '_sense', side_effect=lambda: world._world.discovered.fill(True)):
-            _, _, terminated, _, metrics = world.step(strike_action(np.zeros(world.n, dtype=int)))
+            _, _, terminated, _, metrics = world.step(final_mission_action(np.zeros(world.n, dtype=int)))
         self.assertTrue(terminated)
         self.assertTrue(metrics['mission_success'])
 

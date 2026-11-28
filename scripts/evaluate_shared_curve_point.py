@@ -4,7 +4,7 @@ from pathlib import Path
 import torch
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import checkpoint_payload,model_from_checkpoint,evaluate_model
+from pointmass_rl.final_mission_ppo import checkpoint_payload,model_from_checkpoint,evaluate_model
 torch.set_num_threads(1)
 resolver='--no-resolver' not in sys.argv[2:]
 path=Path(sys.argv[1]);config=Config.load(path.parent/'config.json')

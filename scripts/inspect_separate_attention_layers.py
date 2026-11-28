@@ -5,7 +5,7 @@ import numpy as np
 import torch
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from scripts.inspect_separate_representation import parts,offdiag_cos,write_csv
-from pointmass_rl.strike_ppo import model_from_checkpoint
+from pointmass_rl.final_mission_ppo import model_from_checkpoint
 from pointmass_rl.env import Config
 import matplotlib
 matplotlib.use('Agg')

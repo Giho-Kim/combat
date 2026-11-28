@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from pointmass_rl.belief_policy import choose_action
-from pointmass_rl.env import Config, strike_action
+from pointmass_rl.env import Config, final_mission_action
 from pointmass_rl.exploration import ExplorationPPOActorCritic, PolygonExplorationWorld
 from pointmass_rl.navigation import DubinsPath, rectangle_entry_distance
 
@@ -18,7 +18,7 @@ class ExplorationDeadlineTests(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(1)
         cls.config = replace(Config.load('configs/belief_exploration.json'),
-                             n_agents=2, min_agents=2, strike_speed=1., randomize_counts=False)
+                             n_agents=2, min_agents=2, final_mission_speed=1., randomize_counts=False)
 
     def world(self):
         world = PolygonExplorationWorld(self.config)
@@ -82,7 +82,7 @@ class ExplorationDeadlineTests(unittest.TestCase):
         world._world.t = world.c.horizon-1
         np.testing.assert_array_equal(world.entry_deadline_mask(), world.action_mask()[0])
         world._world.t = 0
-        world.step(strike_action(np.array([0, 1])))
+        world.step(final_mission_action(np.array([0, 1])))
         world._world.t = world.c.horizon-1
         with patch.object(world, 'polygon_entry_steps', side_effect=AssertionError('Do not interrupt locked sweeps')):
             np.testing.assert_array_equal(world.entry_deadline_mask(), world.action_mask()[0])

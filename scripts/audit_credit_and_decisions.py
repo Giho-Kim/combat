@@ -1,4 +1,4 @@
-"""Frozen Target Allocation audit: decision timing and causal action values.
+"""Audit frozen rescue-site allocation policies for decision timing and action values.
 
 Changes no training/environment code. Event variants only alter the schedule;
 counterfactual tests change one executed action, then resume the original policy.
@@ -15,22 +15,22 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from pointmass_rl.env import Config, World, strike_action
-from pointmass_rl.strike_ppo import (DecisionSchedule, _model_observation,
+from pointmass_rl.env import Config, World, final_mission_action
+from pointmass_rl.final_mission_ppo import (DecisionSchedule, _model_observation,
     _model_critic_state, model_from_checkpoint, scheduled_action)
 
 
 def assignment_upper_bound(world):
     """Exact initial assignment value: stationary targets, unit-use drones."""
-    if world.c.target_motion_scale != 0 or world.c.strike_probability != 1:
+    if world.c.target_motion_scale != 0 or world.c.final_mission_probability != 1:
         raise ValueError('Assignment bound requires stationary deterministic targets')
-    from pointmass_rl.strike_lookahead import completion_steps
+    from pointmass_rl.final_mission_lookahead import completion_steps
     agents=np.flatnonzero(world.agent_active)
     masks=np.arange(1 << len(agents));dp=np.full(len(masks),-np.inf);dp[0]=0.
     feasible=completion_steps(world)[agents] <= world.c.horizon-world.t
-    for target in np.flatnonzero(world.target_exists & ~world.destroyed):
+    for target in np.flatnonzero(world.target_exists & ~world.target_completed):
         value={1:2.5,2:2.,3:1.}[int(world.target_type[target])]
-        for _ in range(int(world.target_life[target])):
+        for _ in range(int(world.target_work_units[target])):
             nxt=dp.copy()
             for agent in np.flatnonzero(feasible[:,target]):
                 bit=1 << int(agent);source=masks[(masks & bit)==0]
@@ -44,12 +44,12 @@ class EventSchedule(DecisionSchedule):
         super().__init__(config)
         self.interval = config.horizon
         self.team_interrupt = team_interrupt
-        self.last_life = None
+        self.last_work_units = None
 
     def mask(self, world, available):
-        if self.team_interrupt and self.last_life is not None and np.any(self.last_life != world.target_life):
+        if self.team_interrupt and self.last_work_units is not None and np.any(self.last_work_units != world.target_work_units):
             self.next_decision[world.agent_active & (world.locked_targets() < 0)] = world.t
-        self.last_life = world.target_life.copy()
+        self.last_work_units = world.target_work_units.copy()
         return super().mask(world, available)
 
 
@@ -94,7 +94,7 @@ def episode(model, config, seed, mode, resolver, stochastic=False, collect=False
         switches+=int((w.agent_active & (previous>=0) & (previous!=joint)).sum())
         decision_count+=int(free.sum()); agent_steps+=int(w.agent_active.sum())
         for target in np.unique(joint[w.agent_active]):
-            capacity=min(2 if w.target_type[target]==1 else 1,int(w.target_life[target]))
+            capacity=min(2 if w.target_type[target]==1 else 1,int(w.target_work_units[target]))
             over+=max(0,int((w.agent_active & (joint==target)).sum())-capacity)
         previous=joint
         w.step(action)
@@ -102,7 +102,7 @@ def episode(model, config, seed, mode, resolver, stochastic=False, collect=False
     metrics=w.metrics()
     row=dict(seed=seed,mode=mode,resolver=resolver,stochastic=stochastic,
         team_return=float(metrics['team_return']),success=float(metrics['mission_success']),
-        removed=int(w.destroyed[w.target_exists].sum()),switches=switches,
+        removed=int(w.target_completed[w.target_exists].sum()),switches=switches,
         switch_rate=switches/max(1,agent_steps),decision_rate=decision_count/max(1,agent_steps),
         over_capacity_rate=over/max(1,agent_steps),entropy=float(np.mean(entropy)) if entropy else 0.)
     return row,snapshots,q_rows
@@ -127,7 +127,7 @@ def counterfactuals(model,snapshots,repeats):
                 torch.manual_seed(snapshot['seed']*10000+snapshot['step']*10+repeat)
                 w=deepcopy(w0);s=deepcopy(snapshot['schedule']);score=float(w.score)
                 s.record(w,joint,snapshot['decisions'],snapshot['prob'])
-                w.step(strike_action(joint))
+                w.step(final_mission_action(joint))
                 while not w.done:
                     action,_=scheduled_action(model,w,s,deterministic=False,resolver=False)
                     w.step(action)
@@ -203,7 +203,7 @@ def render_report(out):
     checkpoints=[name for name in ('latest','best') if any(r['checkpoint']==name for r in rows)]
     protocol=json.loads((out/'protocol.json').read_text())
     modes=['per_step','event_own','event_team']
-    labels=['Every step','Hold until invalid / complete','Also re-decide on team damage']
+    labels=['Every step','Hold until invalid / complete','Also re-decide on team progress']
     fig,axes=plt.subplots(1,2,figsize=(11,4.1))
     for ax,resolver in zip(axes,['False','True']):
         for i,(mode,label,color) in enumerate(zip(modes,labels,colors)):
@@ -299,7 +299,7 @@ def main():
     (out/'protocol.json').write_text(json.dumps(dict(run=str(run),config=config.__dict__,episodes=args.episodes,
         cf_states=args.cf_states,cf_repeats=args.cf_repeats,
         event_own='Hold assignment until own target invalidates or service completes; physical service locks unchanged.',
-        event_team='As event_own, also re-decide for unlocked agents whenever any target life changes.',
+        event_team='As event_own, also re-decide for unlocked agents whenever any target work_units changes.',
         counterfactual='One agent action changed for one step; then original stochastic per-step policy without resolver resumes. Common RNG seeds across alternatives.'),indent=2))
     print(json.dumps(summary['counterfactual'],indent=2),flush=True)
     render_report(out)

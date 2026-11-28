@@ -24,7 +24,7 @@ for ax,arc,title in zip(axes,[False,True],['Belief training environment','Recent
  ax.scatter(w.pos[:,0]/10,w.pos[:,1]/10,marker='^',s=28,c='#3c9b78',label='Drone start',zorder=3)
  ax.scatter(p[f1,0],p[f1,1],s=65,c='#2878b8',label='Formation 1: actual',edgecolors='white',zorder=4)
  ax.scatter(p[f2,0],p[f2,1],s=65,c='#e38428',label='Formation 2: actual',edgecolors='white',zorder=4)
- reports=np.array([r['position'] for r in w.initial_intel['objects']])/10
+ reports=np.array([r['position'] for r in w.initial_report['objects']])/10
  ax.scatter(reports[:,0],reports[:,1],marker='+',s=120,c='#9954b2',linewidths=2,label='Initial reports (F1)',zorder=5)
  for actual,reported in zip(p[f1],reports):ax.plot([actual[0],reported[0]],[actual[1],reported[1]],color='#aeb7c2',lw=.8,zorder=2)
  ax.set(xlim=(0,10),ylim=(0,10),xticks=range(0,11,2),yticks=range(0,11,2),xlabel='x (km)',ylabel='y (km)',title=title);ax.set_aspect('equal');ax.grid(alpha=.14)

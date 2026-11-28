@@ -3,9 +3,9 @@ import csv
 from pathlib import Path
 import numpy as np
 import torch
-from .env import World,strike_action
-from .strike_target_actor import TargetAllocationActorCritic
-from .strike_ppo import (DecisionSchedule,_model_critic_state,_batch,_coma_update,
+from .env import World,final_mission_action
+from .final_mission_target_actor import TargetAllocationActorCritic
+from .final_mission_ppo import (DecisionSchedule,_model_critic_state,_batch,_coma_update,
     _optimizers,model_tensor,resolve_device,model_from_checkpoint,allocated_actions,
     evaluate_model,save_checkpoint)
 
@@ -68,7 +68,7 @@ def train(config,total,seed,*,episodes_per_update=256,n_envs=32,epochs=10,
             for j,w in enumerate(worlds):
                 reward=0.;elapsed=0
                 while not w.done:
-                    count=int(w.agent_active.sum());_,r,_,_,_=w.step(strike_action(assignment['target'][j]));completed+=count
+                    count=int(w.agent_active.sum());_,r,_,_,_=w.step(final_mission_action(assignment['target'][j]));completed+=count
                     reward+=(config.discount_gamma**elapsed)*float(np.sum(r));elapsed+=1
                 returns.append(reward);episode_rows.append(dict(agent_transitions=completed,**w.metrics()))
         # The actor has remained frozen throughout all complete episodes above.

@@ -24,7 +24,7 @@ class AlignedMDPTests(unittest.TestCase):
         self.assertEqual(variable['gae_lambda'], .97)
         self.assertEqual(variable['target_motion_scale'], 0.0)
 
-    def test_reward_is_damage_for_every_step_and_episode(self):
+    def test_reward_matches_progress_value_at_every_step_and_episode(self):
         for path in ('configs/five_agents.json', 'configs/target_allocation_variable.json'):
             for seed in range(10000, 10012):
                 with self.subTest(config=path, seed=seed):

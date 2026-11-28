@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter,PercentFormatter
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config
-from pointmass_rl.strike_ppo import model_from_checkpoint,checkpoint_payload,evaluate_model
+from pointmass_rl.final_mission_ppo import model_from_checkpoint,checkpoint_payload,evaluate_model
 parser=argparse.ArgumentParser()
 parser.add_argument('--run',default='runs/target_allocation_shared_attention')
 parser.add_argument('--title', default='Target Allocation | shared attention | 30 fixed evaluation scenarios')

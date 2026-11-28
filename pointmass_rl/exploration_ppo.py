@@ -13,10 +13,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from .belief_policy import stack_observations, subset
+from .belief_policy import stack_observations
 from .belief_training import (GUARDED_EXPLORATION_RESOLVER, _write_csv, evaluate_belief,
                               save_belief_checkpoint, summarize_belief_rows)
-from .env import strike_action
+from .env import final_mission_action
 from .exploration import ExplorationPPOActorCritic, PolygonExplorationWorld
 
 
@@ -29,12 +29,12 @@ def score_key(summary):
     return summary['team_return'], summary['mission_success']
 
 
-def _initialize_evaluation(config, hidden, weights, device):
+def _initialize_evaluation(config, hidden, weights, device, absolute_positions):
     """Spawn independent environments with one frozen policy copy per process."""
     global _evaluation_model, _evaluation_config
     torch.set_num_threads(1)
     _evaluation_config = config
-    _evaluation_model = ExplorationPPOActorCritic(hidden)
+    _evaluation_model = ExplorationPPOActorCritic(hidden, absolute_positions=absolute_positions)
     _evaluation_model.load_state_dict({name: torch.from_numpy(value) for name, value in weights.items()})
     _evaluation_model.to(device).eval()
 
@@ -65,7 +65,8 @@ def evaluate_exploration(model, config, episodes=10, seed=10000, workers=4,
     rows = {resolver: [None]*episodes for resolver in resolvers}
     with ProcessPoolExecutor(max_workers=min(workers, len(tasks)),
             mp_context=multiprocessing.get_context('spawn'), initializer=_initialize_evaluation,
-            initargs=(config, model.hidden, weights, str(next(model.parameters()).device))) as pool:
+            initargs=(config, model.hidden, weights, str(next(model.parameters()).device),
+                      model.absolute_positions)) as pool:
         for resolver, episode, row in pool.map(_evaluate_episode, tasks, chunksize=1):
             rows[resolver][episode] = row
     return {resolver: (summarize_belief_rows(records), records) for resolver, records in rows.items()}
@@ -122,7 +123,7 @@ Every option receives the shared team rewards during its own time interval.
                     action = obs['mask'].argmax(-1)
                     probabilities = np.eye(world.action_count, dtype=np.float32)[action]
                 transitions += int(obs['active'].sum())
-                new_obs, reward, terminated, truncated, metrics = world.step(strike_action(action), probabilities)
+                new_obs, reward, terminated, truncated, metrics = world.step(final_mission_action(action), probabilities)
                 done = terminated or truncated
                 for agent, sample in enumerate(pending[i]):
                     if sample is None:
@@ -144,7 +145,6 @@ Every option receives the shared team rewards during its own time interval.
 
 def update_decisions(model, optimizer, samples, epochs, critic_epochs, width, entropy_coef, clip):
     device = next(model.parameters()).device
-    batch = stack_observations([s['obs'] for s in samples], device=device)
     agents = torch.tensor([s['agent'] for s in samples], device=device)
     actions = torch.as_tensor(np.stack([s['action'] for s in samples]), device=device)
     old_logps = torch.tensor([s['old_logp'] for s in samples], device=device)
@@ -155,7 +155,8 @@ def update_decisions(model, optimizer, samples, epochs, critic_epochs, width, en
     value_losses, policy_losses, entropies = [], [], []
     for _ in range(critic_epochs):
         for ix in torch.randperm(len(samples), device=device).split(width):
-            loss = nn.functional.huber_loss(model.state_value(subset(batch, ix)), returns[ix], delta=10.)
+            observations = stack_observations([samples[i]['obs'] for i in ix.tolist()], device=device)
+            loss = nn.functional.huber_loss(model.state_value(observations), returns[ix], delta=10.)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 10.)
@@ -163,7 +164,8 @@ def update_decisions(model, optimizer, samples, epochs, critic_epochs, width, en
             value_losses.append(float(loss.detach()))
     for _ in range(epochs):
         for ix in torch.randperm(len(samples), device=device).split(width):
-            distribution = model.distribution(subset(batch, ix))
+            observations = stack_observations([samples[i]['obs'] for i in ix.tolist()], device=device)
+            distribution = model.distribution(observations)
             rows = torch.arange(len(ix), device=device)
             logps = distribution.log_prob(actions[ix])[rows, agents[ix]]
             entropy = distribution.entropy()[rows, agents[ix]].mean()
@@ -185,7 +187,7 @@ def update_decisions(model, optimizer, samples, epochs, critic_epochs, width, en
 def train_exploration_ppo(config, total_steps, out, seed=7, n_envs=8, rollout_decisions=64,
                           epochs=4, critic_epochs=4, minibatch_size=32, learning_rate=5e-4,
                           entropy_coef=.01, policy_clip=.2, eval_interval=100000,
-                          eval_episodes=10, eval_seed=10000, checkpoint_interval=100000, device='auto',
+                          eval_episodes=10, eval_seed=10000, checkpoint_interval=500000, device='auto',
                           eval_workers=4, eval_screen_episodes=0, eval_revisit_guard=False):
     if not config.belief_exploration_only or config.mode != 'belief':
         raise ValueError('Decision PPO requires belief_exploration_only in belief mode')
@@ -212,7 +214,7 @@ def train_exploration_ppo(config, total_steps, out, seed=7, n_envs=8, rollout_de
     torch.set_num_threads(1)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
-    model = ExplorationPPOActorCritic().to(device)
+    model = ExplorationPPOActorCritic(absolute_positions=True).to(device)
     print(f'Device: {device}' + (f' ({torch.cuda.get_device_name(device)})' if device.type == 'cuda' else ''), flush=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, eps=1e-5)
     worlds = [PolygonExplorationWorld(config) for _ in range(n_envs)]
@@ -225,7 +227,9 @@ def train_exploration_ppo(config, total_steps, out, seed=7, n_envs=8, rollout_de
         deadline_filter='first physical entry along Dubins/lawnmower route; no sweep-completion requirement',
         return_target='full-episode Monte Carlo; physical-step discount; no GAE or Q bootstrap',
         actor_advantage='observed return minus frozen behavior state value',
-        collection='frozen policy; complete episode waves; asynchronous per-drone polygon options',
+        collection=('frozen policy; complete episode waves; per-physics-step decisions'
+                    if config.exploration_every_step else
+                    'frozen policy; complete episode waves; asynchronous per-drone polygon options'),
         budget='agent physics transitions; finish episode wave before updating/stopping',
         checkpoint_kind='weights/optimizer; not an exact environment/RNG resume')
     episode_rows, evaluation_rows, update_rows = [], [], []

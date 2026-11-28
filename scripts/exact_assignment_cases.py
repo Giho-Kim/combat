@@ -1,4 +1,4 @@
-"""Recover closest optimal assignments and exact lost-value decisions."""
+"""Analyze drone assignments to rescue sites and decisions that reduced the achievable rescue score."""
 import argparse
 import csv
 import hashlib
@@ -16,9 +16,9 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from pointmass_rl.env import Config,World,strike_action
-from pointmass_rl.strike_lookahead import completion_steps
-from pointmass_rl.strike_ppo import DecisionSchedule,model_from_checkpoint,scheduled_action,_model_observation
+from pointmass_rl.env import Config,World,final_mission_action
+from pointmass_rl.final_mission_lookahead import completion_steps
+from pointmass_rl.final_mission_ppo import DecisionSchedule,model_from_checkpoint,scheduled_action,_model_observation
 from scripts.audit_credit_and_decisions import assignment_upper_bound
 
 
@@ -32,10 +32,10 @@ def write_csv(path,rows):
 def optimal_plan(world,preference=None):
     """Lexicographic: value, fewest changed agent destinations, earliest finish.
 
-    Actual strike participants are fixed. Unfinished locked work reserves a
-    life/slot even when it can no longer finish by the deadline.
+    Actual final_mission participants are fixed. Unfinished locked work reserves a
+    work_units/slot even when it can no longer finish by the deadline.
     """
-    if world.c.target_motion_scale!=0 or world.c.strike_probability!=1:
+    if world.c.target_motion_scale!=0 or world.c.final_mission_probability!=1:
         raise ValueError('This oracle requires stationary deterministic targets')
     n=world.n;preference=np.full(n,-1) if preference is None else np.asarray(preference)
     locks=world.locked_targets();plan=np.full(n,-1,dtype=int)
@@ -44,8 +44,8 @@ def optimal_plan(world,preference=None):
     for i in np.flatnonzero(world.agent_active & (locks>=0)):
         j=int(locks[i]);plan[i]=j;reserved[j]+=1
         if eta[i,j]<=remaining:fixed_value+={1:2.5,2:2.,3:1.}[int(world.target_type[j])]
-    slots=[j for j in np.flatnonzero(world.target_exists & ~world.destroyed)
-           for _ in range(max(0,int(world.target_life[j])-reserved[j]))]
+    slots=[j for j in np.flatnonzero(world.target_exists & ~world.target_completed)
+           for _ in range(max(0,int(world.target_work_units[j])-reserved[j]))]
     states=np.arange(1 << len(agents));dp=np.full(len(states),-10**18,dtype=np.int64);dp[0]=0
     parents=[]
     for target in slots:
@@ -81,16 +81,16 @@ def rollout(model,config,seed):
         action,_=scheduled_action(model,w,schedule,resolver=True);chosen=action['target'].copy()
         if w.t==0:first=chosen.copy()
         switches+=w.agent_active&(previous>=0)&(previous!=chosen);previous=chosen.copy()
-        active=w.agent_active.copy();participants=w.strike_participants.copy();pos=w.pos.copy()
+        active=w.agent_active.copy();participants=w.final_mission_participants.copy();pos=w.pos.copy()
         w.step(action);travelled+=np.linalg.norm(w.pos-pos,axis=-1)
-        consumed=np.flatnonzero(active & ~w.agent_active)
-        for i in consumed:actual[i]=chosen[i];finish[i]=w.t
+        completed_agents=np.flatnonzero(active & ~w.agent_active)
+        for i in completed_agents:actual[i]=chosen[i];finish[i]=w.t
         value,_=optimal_plan(w);bound=float(w.score)+value
         if bound>last_bound+1e-7:raise AssertionError(('Bound increased',seed,w.t,last_bound,bound))
         row=dict(step=w.t-1,score_after=float(w.score),upper_bound_after=bound,
             pos_before=pos.tolist(),chosen=chosen.tolist(),raw=raw.tolist(),
-            logits=logits.tolist(),consumed=consumed.tolist(),
-            started=np.argwhere(w.strike_participants & ~participants).tolist(),
+            logits=logits.tolist(),retired_agents=completed_agents.tolist(),
+            started=np.argwhere(w.final_mission_participants & ~participants).tolist(),
             bound_loss=last_bound-bound)
         if first_loss is None and bound<start_bound-1e-7:first_loss=(len(trace),before,chosen.copy())
         trace.append(row);last_bound=bound
@@ -100,13 +100,13 @@ def rollout(model,config,seed):
 
 
 def one_step_rescue(model,world,chosen,initial_bound):
-    rows=[];baseline_after=deepcopy(world);baseline_after.step(strike_action(chosen))
+    rows=[];baseline_after=deepcopy(world);baseline_after.step(final_mission_action(chosen))
     actual_bound=baseline_after.score+optimal_plan(baseline_after)[0]
     available=model.available_actions(world);locked=world.locked_targets()
     for i in np.flatnonzero(world.agent_active & (locked<0)):
         for j in np.flatnonzero(available[i]):
             if j==chosen[i]:continue
-            variant=chosen.copy();variant[i]=j;branch=deepcopy(world);branch.step(strike_action(variant))
+            variant=chosen.copy();variant[i]=j;branch=deepcopy(world);branch.step(final_mission_action(variant))
             bound=branch.score+optimal_plan(branch)[0]
             if bound>actual_bound+1e-7:
                 rows.append(dict(drone=int(i),actual_target=int(chosen[i]),alternative_target=int(j),
@@ -114,7 +114,7 @@ def one_step_rescue(model,world,chosen,initial_bound):
                     prevents_first_loss=bool(bound>=initial_bound-1e-7)))
     rows.sort(key=lambda r:(-r['alternative_bound'],r['drone'],r['alternative_target']))
     _,plan=optimal_plan(world,chosen)
-    command=np.where(plan>=0,plan,chosen);branch=deepcopy(world);branch.step(strike_action(command))
+    command=np.where(plan>=0,plan,chosen);branch=deepcopy(world);branch.step(final_mission_action(command))
     joint_bound=branch.score+optimal_plan(branch)[0]
     assert joint_bound>=initial_bound-1e-7,(world.t,joint_bound,initial_bound)
     return rows,command.tolist(),float(joint_bound)
@@ -127,8 +127,8 @@ def simulate_fixed(config,seed,plan,return_assignment=False):
         selected[i]=absent[0] if len(absent) else int(np.argmax(eta[i]))
     selected[~w.agent_active]=0;actual=np.full(w.n,-1)
     while not w.done:
-        active=w.agent_active.copy();w.step(strike_action(selected))
-        consumed=active & ~w.agent_active;actual[consumed]=selected[consumed]
+        active=w.agent_active.copy();w.step(final_mission_action(selected))
+        completed_agents=active & ~w.agent_active;actual[completed_agents]=selected[completed_agents]
     return (float(w.score),actual) if return_assignment else float(w.score)
 
 
@@ -161,7 +161,7 @@ def plot_case(pdf,seed,result,plan,oracle,rows,rescue,out):
     table=' | '.join(f'D{r["drone"]}: {"unfinished" if r["actual_target"]<0 else "T"+str(r["actual_target"])} → '
                      f'{"unused" if r["oracle_target"]<0 else "T"+str(r["oracle_target"])}' for r in rows if r['changed'])
     index,before,chosen=first_loss
-    cause=f'First irrecoverable loss follows the decision at step {before.t}; step-level rescue alternatives are in the case report.'
+    cause=f'First irrecoverable loss follows the decision at step {before.t}; the case report lists alternative rescue-site assignments.'
     fig.suptitle(f'Seed {seed} | actual {w.score:g}, optimum {oracle:g}, lost value {oracle-w.score:g}',fontsize=15)
     fig.text(.5,.055,table,ha='center',fontsize=9,wrap=True)
     fig.text(.5,.015,cause,ha='center',fontsize=9)
@@ -193,7 +193,7 @@ def render_saved(out,config):
             before=None;index=case['first_loss_trace']['step']
             for row in case['trace']:
                 if w.t==index:before=deepcopy(w)
-                w.step(strike_action(row['chosen']))
+                w.step(final_mission_action(row['chosen']))
             assert abs(w.score-case['summary']['actual_return'])<1e-7
             r=dict(world=w,initial=initial,actual=np.array(case['actual_successful_assignment']),
                 trace=case['trace'],first_loss=(index,before,np.array(case['first_loss_trace']['chosen'])))
@@ -215,14 +215,14 @@ def render_saved(out,config):
                 f'다음 상태에서 달성 가능한 총점 {r["actual_bound"]:g} → {r["alternative_bound"]:g}</li>' for r in rescue[:5])
             if not rescue_text:rescue_text='<li>한 대의 선택 변경으로는 개선되지 않으며 공동 재배정이 필요합니다.</li>'
             targets=[row for row in csv.DictReader((out/'target_outcomes.csv').open()) if int(row['seed'])==seed]
-            target_text=' · '.join(f'T{t["target"]}: Type {t["type"]}, life {t["initial_life"]}, 정책/최적 처리 life {t["actual_life_removed"]}/{t["oracle_life_removed"]}' for t in targets)
+            target_text=' · '.join(f'T{t["target"]}: Type {t["type"]}, work_units {t["initial_work_units"]}, 정책/최적 처리 work_units {t["actual_work_units_removed"]}/{t["oracle_work_units_removed"]}' for t in targets)
             explanation=''
             if seed==20010:
                 explanation=('<p><b>역할 교환이 필요한 사례:</b> D2가 T5에 더 가깝지만, D1은 T6를 102스텝에 완료하므로 마감을 넘깁니다. '
                     'D1→T5(91), D2→T6(99)로 나누면 둘 다 완료합니다. 가까운 드론에게 무조건 맡기는 것이 최적은 아닙니다.</p>')
             parts.append(f'<section id="seed-{seed}"><h2>Seed {seed}: {w.score:g} → {case["summary"]["oracle_return"]:g}</h2>'
                 f'<img src="seed_{seed}.png"><p>{html.escape(target_text)}</p>'+explanation+
-                '<table><tr><th>드론</th><th>초기 actor→배정 / 직행 완료 step</th><th>정책 완료 표적 / 완료 step</th>'
+                '<table><tr><th>드론</th><th>초기 actor→배정 / 직행 완료 step</th><th>정책 완료 작업 지점 / 완료 step</th>'
                 '<th>최적 배정 / 직행 완료 step</th><th>얻는 가치</th></tr>'+''.join(table)+'</table>'
                 f'<details><summary>처음 상한을 잃는 결정: step {index}</summary><ul>{rescue_text}</ul>'
                 '<p>이 검사는 해당 한 스텝 뒤에도 최적 후속 배정으로 상한을 달성할 여지가 남는지 확인합니다.</p>'
@@ -277,8 +277,8 @@ def main():
                 agents.append(row);agent_rows.append(row)
             for j in np.flatnonzero(initial.target_exists):
                 target_rows.append(dict(seed=seed,target=int(j),type=int(initial.target_type[j]),
-                    initial_life=int(initial.target_life[j]),actual_life_removed=int(initial.target_life[j]-r['world'].target_life[j]),
-                    oracle_life_removed=int((plan==j).sum()),x_km=float(initial.targets[j,0]/10),y_km=float(initial.targets[j,1]/10)))
+                    initial_work_units=int(initial.target_work_units[j]),actual_work_units_removed=int(initial.target_work_units[j]-r['world'].target_work_units[j]),
+                    oracle_work_units_removed=int((plan==j).sum()),x_km=float(initial.targets[j,0]/10),y_km=float(initial.targets[j,1]/10)))
             gap=oracle-r['world'].score
             assert abs(sum(a['oracle_value']-a['actual_value'] for a in agents)-gap)<1e-7
             summary=dict(seed=seed,actual_return=float(r['world'].score),oracle_return=oracle,gap=float(gap),

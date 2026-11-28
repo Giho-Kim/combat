@@ -8,7 +8,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 from pointmass_rl.env import Config,World,evaluation_task_for_episode
-from pointmass_rl.strike_ppo import (model_from_checkpoint,checkpoint_payload,DecisionSchedule,
+from pointmass_rl.final_mission_ppo import (model_from_checkpoint,checkpoint_payload,DecisionSchedule,
     _model_observation,scheduled_action,_evaluation_threshold)
 
 def write_csv(path, rows):
@@ -51,7 +51,7 @@ def main():
                 saved[f'state_{context}']=state.numpy();saved[f'mask_{context}']=mask.numpy();saved[f'prob_{context}']=prob.numpy()
                 # Input shuffles preserve observed values; history reset tests memory dependence.
                 changes={}
-                for name,cols in [('target_position',slice(0,2)),('target_type',slice(2,5)),('target_life',slice(5,6))]:
+                for name,cols in [('target_position',slice(0,2)),('target_type',slice(2,5)),('target_work_units',slice(5,6))]:
                     z=state.clone();_,zt,_,_=parts(z,n,t);perm=valid_targets[torch.as_tensor(rng.permutation(len(valid_targets)))];zt[valid_targets,cols]=ta[perm,cols];changes[name]=z
                 z=state.clone();zd,_,_,_=parts(z,n,t);di=torch.where(alive)[0];perm=di[torch.as_tensor(rng.permutation(len(di)))];zd[di,:2]=dr[perm,:2];changes['drone_position']=z
                 z=state.clone();_,_,zp,zv=parts(z,n,t);zp.zero_();zp[:,exists]=1/max(1,int(exists.sum()));zv.zero_();changes['all_previous_intent_reset']=z
