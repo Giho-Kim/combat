@@ -8,6 +8,7 @@ export OMP_NUM_THREADS="${BLAS_THREADS:-1}"
 export BLIS_NUM_THREADS="${BLAS_THREADS:-1}"
 # Usage: bash scripts/train_belief_exploration.sh [agent_transitions] [new_output_directory]
 # Actor inputs use absolute map positions and both previous intent channels.
+# Default config accumulates sensor miss likelihoods over the full search map.
 # ROLLOUT_DECISIONS counts polygon selections, not physics steps. Each collection
 # finishes complete episode waves with frozen weights; the budget may overshoot.
 exploration_args=()
@@ -18,7 +19,7 @@ exec "${PYTHON_BIN:-python}" -u -m pointmass_rl train \
   --mode belief --algorithm target_allocation --exploration-ppo "${exploration_args[@]}" \
   --device "${DEVICE:-cuda}" \
   --config "${CONFIG:-configs/belief_exploration.json}" \
-  --steps "${1:-10000000}" --out "${2:-runs/belief_exploration_decision_ppo_absolute}" \
+  --steps "${1:-10000000}" --out "${2:-runs/belief_exploration_absolute_8km_4km_likelihood}" \
   --seed "${SEED:-7}" --n-envs "${N_ENVS:-8}" \
   --rollout-steps "${ROLLOUT_DECISIONS:-64}" \
   --epochs "${EPOCHS:-4}" --critic-epochs "${CRITIC_EPOCHS:-4}" \

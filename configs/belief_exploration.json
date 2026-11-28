@@ -13,7 +13,7 @@
   "belief_representation": "gaussian_uniform",
   "belief_background_mass": 1.0,
   "belief_background_redistribute": true,
-  "belief_background_update": "local",
+  "belief_background_update": "likelihood",
   "belief_report_association": "hard",
   "belief_background_type_prior": [
     0.3333333333333333,
